@@ -10,6 +10,8 @@ const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 9
 const MARKET_MODEL_VERSION = 6;
 
 type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string };
+type MarketTrade = { year:number; age:number; asset:'stocks'|'bonds'; productId:string; label:string; side:'買入'|'賣出'; quantity:number; price:number; amount:number };
+type MarketSnapshot = { year:number; age:number; signals:MarketSignals; stockPrices:Record<string,number>; stockPaths:Record<string,number[]>; bondPrices:Record<string,number> };
 
 type MarketSignals = {
   growth: number; inflation: number; policyRate: number; riskAppetite: number;
@@ -45,6 +47,11 @@ const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
 const stableNoise = (key:string, scale=1) => {
   let h=2166136261;
   for(let i=0;i<key.length;i++){h^=key.charCodeAt(i);h=Math.imul(h,16777619)}
+  const selectedMarketYear = marketYear ?? (marketSnapshots[marketSnapshots.length-1]?.year ?? 0);
+  const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
+  const selectedSignals = selectedMarket?.signals ?? marketSignals;
+  const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
+
   return ((((h>>>0)%10000)/9999)*2-1)*scale;
 };
 const stockResearch = (id:string, signals:MarketSignals, hist:number[]) => {
@@ -352,6 +359,9 @@ export default function Page() {
   const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
   const [annualReports, setAnnualReports] = useState<AnnualReport[]>([initialMarket.preGameReport]);
   const [reportOpen, setReportOpen] = useState<number | null>(null);
+  const [marketYear, setMarketYear] = useState<number | null>(null);
+  const [marketSnapshots, setMarketSnapshots] = useState<MarketSnapshot[]>([{year:0,age:24,signals:initialMarket.signals,stockPrices:initialMarket.stockPrices,stockPaths:initialMarket.stockPriceHistory,bondPrices:initialMarket.bondPrices}]);
+  const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
@@ -370,6 +380,8 @@ export default function Page() {
         const parsed = JSON.parse(savedProducts);
         if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
+        if (Array.isArray(parsed.marketSnapshots) && parsed.marketSnapshots.length) setMarketSnapshots(parsed.marketSnapshots);
+        if (Array.isArray(parsed.marketTrades)) setMarketTrades(parsed.marketTrades);
         const hasSavedReports = Array.isArray(parsed.annualReports) && parsed.annualReports.length > 0;
         if (hasSavedReports) setAnnualReports(parsed.annualReports);
         if (parsed.marketModelVersion === MARKET_MODEL_VERSION) {
@@ -397,8 +409,8 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketModelVersion: MARKET_MODEL_VERSION }));
-  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, isMounted]);
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, marketModelVersion: MARKET_MODEL_VERSION }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -450,6 +462,7 @@ export default function Page() {
       const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: asset === 'stocks' ? requestedShares : undefined, bondUnits: asset === 'bonds' ? requestedBondUnits : undefined, faceValue: asset === 'bonds' ? 10000 : undefined, maturityYears, couponRate };
       setProductHoldings((current) => [...current, purchase]);
       setProductHistory((current) => [...current, purchase]);
+      if (asset==='stocks' || asset==='bonds') setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset,productId,label:product.label.split('｜')[0],side:'買入',quantity:asset==='stocks'?requestedShares:requestedBondUnits,price:price||0,amount}]);
     }
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
     if (asset === 'stocks') setStockTradeShares((current) => ({ ...current, [productId]: '' }));
@@ -471,6 +484,7 @@ export default function Page() {
       const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - proceeds) };
       return { ...current, portfolio, lifeStatus: `已賣出 ${holding.label.split('｜')[0]}，NT${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`, eventHistory: [...current.eventHistory, `股票賣出：${holding.label.split('｜')[0]}，實現損益 NT${roundMoney(proceeds - holding.amount).toLocaleString('en-US')}。`] };
     });
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
     setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
   };
 
@@ -488,6 +502,7 @@ export default function Page() {
     const costSold = costPerUnit * units;
     setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount: item.amount-costSold}]));
     setGame((current) => ({...current, portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,bonds:Math.max(0,current.portfolio.bonds-proceeds)}, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'bonds',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:units,price:quote,amount:proceeds}]);
     setBondTradeUnits((current)=>({...current,['sell-'+holdingId]:''}));
   };
 
@@ -512,6 +527,9 @@ export default function Page() {
     setMarketSignals(restartedMarket.signals);
     setAnnualReports([restartedMarket.preGameReport]);
     setReportOpen(null);
+    setMarketYear(null);
+    setMarketSnapshots([{year:0,age:24,signals:restartedMarket.signals,stockPrices:restartedMarket.stockPrices,stockPaths:restartedMarket.stockPriceHistory,bondPrices:restartedMarket.bondPrices}]);
+    setMarketTrades([]);
     setStockTradeShares({});
     setBondTradeUnits({});
     if (typeof window !== 'undefined') {
@@ -523,7 +541,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketModelVersion: MARKET_MODEL_VERSION }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, marketModelVersion: MARKET_MODEL_VERSION }));
       alert('遊戲已儲存');
     }
   };
@@ -566,7 +584,7 @@ export default function Page() {
     });
 
     // Bond quotes are per 100 face value. Rates up => prices down; longer duration moves more.
-    const rateShock = (signals.policyRate - marketSignals.policyRate) + (signals.inflation-marketSignals.inflation)*0.35;
+    const rateShock = (signals.policyRate - selectedSignals.policyRate) + (signals.inflation-selectedSignals.inflation)*0.35;
     const nextBondPrices:Record<string,number> = {...bondPrices};
     Object.keys(nextBondPrices).forEach((id)=>{
       const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
@@ -574,6 +592,7 @@ export default function Page() {
       nextBondPrices[id] = clamp(nextBondPrices[id] * (1 - duration*rateShock + creditShock), 65, 125);
     });
     setBondPrices(nextBondPrices);
+    setMarketSnapshots((current)=>[...current,{year:game.year,age:game.age,signals,stockPrices:nextStockPrices,stockPaths:newMonthlyPaths,bondPrices:nextBondPrices}]);
 
     const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
     const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
@@ -969,7 +988,7 @@ export default function Page() {
                             <div className="stock-live-price">目前每股 <b>NT${(stockPrices[product.id] || 100).toFixed(2)}</b></div>
                             <label className="money-input-wrap"><span>股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入股數" value={stockTradeShares[product.id] || ''} onChange={(event) => setStockTradeShares((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
                             <small>預估成交金額：NT${roundMoney(Number(stockTradeShares[product.id] || 0) * (stockPrices[product.id] || 100)).toLocaleString('en-US')}</small>
-                          </div> : asset === 'bonds' ? <div className="stock-order-box"><div className="stock-live-price">目前價格 <b>{(bondPrices[product.id]||100).toFixed(2)}</b> / 面額100</div><label className="money-input-wrap"><span>張數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入張數" value={bondTradeUnits[product.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,[product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>每張面額 NT$10,000 · 預估成交 NT${roundMoney(Number(bondTradeUnits[product.id]||0)*10000*(bondPrices[product.id]||100)/100).toLocaleString('en-US')}</small></div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
+                          </div> : asset === 'bonds' ? <div className="stock-order-box"><div className="stock-live-price">目前價格 <b>{(selectedMarket?.bondPrices[product.id]||bondPrices[product.id]||100).toFixed(2)}</b> / 面額100</div><label className="money-input-wrap"><span>張數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入張數" value={bondTradeUnits[product.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,[product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>每張面額 NT$10,000 · 預估成交 NT${roundMoney(Number(bondTradeUnits[product.id]||0)*10000*(bondPrices[product.id]||100)/100).toLocaleString('en-US')}</small></div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
                           <button onClick={() => buyProduct(asset, product.id)}>購買</button>
                         </div>
                       </div>
@@ -1047,12 +1066,13 @@ export default function Page() {
         </section>
 
         </> : <section className="panel stock-market-page">
-          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>AGE {game.age}</span></div>
+          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>{selectedMarketYear===0?'PRE-GAME':`YEAR ${selectedMarketYear}`}</span></div>
+          <div className="market-year-picker"><label htmlFor="market-year">檢視年度</label><select id="market-year" value={selectedMarketYear} onChange={(e)=>{setMarketYear(Number(e.target.value));setResearchOverlay(null)}}>{[...marketSnapshots].reverse().map((x)=><option key={x.year} value={x.year}>{x.year===0?'遊戲開始前一年｜市場背景':`第 ${x.year} 年｜${x.age}歲`}</option>)}</select></div>
           {productCatalog.stocks.map((product) => {
-            const price=stockPrices[product.id]||100; const hist=stockPriceHistory[product.id]||[100];
+            const price=selectedMarket?.stockPrices[product.id]||stockPrices[product.id]||100; const hist=selectedMarket?.stockPaths[product.id]||stockPriceHistory[product.id]||[100];
             const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
             const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
-            const research=stockResearch(product.id,marketSignals,hist);
+            const research=stockResearch(product.id,selectedSignals,hist);
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
               <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
               <div className="market-years"><span>遊戲開始前 1 年</span><span>現在 {game.age}歲</span></div>
@@ -1064,17 +1084,18 @@ export default function Page() {
                   ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
                 ].map(([key,label,status])=><button key={key} onClick={()=>{
                   const bodies:Record<string,React.ReactNode>={
-                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>目前企業獲利偏弱，景氣接近持平，利率仍在相對高位。整體基本面偏中性至保守，短期缺乏明顯推升估值的力量。</p></>,
-                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>目前大型資金動能偏弱，市場風險偏好有限。買盤力道不足，短期資金面對價格的支撐較弱。</p></>,
-                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>近期政策、產業與企業消息整體偏正面，但部分利多可能已提前反映在價格中。消息環境有利，仍需觀察市場後續反應。</p></>,
+                    fundamental:<><p>企業獲利成長 {(selectedSignals.earnings*100).toFixed(1)}% · 景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 政策利率 {(selectedSignals.policyRate*100).toFixed(1)}%</p><p>目前企業獲利偏弱，景氣接近持平，利率仍在相對高位。整體基本面偏中性至保守，短期缺乏明顯推升估值的力量。</p></>,
+                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(selectedSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>目前大型資金動能偏弱，市場風險偏好有限。買盤力道不足，短期資金面對價格的支撐較弱。</p></>,
+                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(selectedSignals.inflation*100).toFixed(1)}%</p><p>近期政策、產業與企業消息整體偏正面，但部分利多可能已提前反映在價格中。消息環境有利，仍需觀察市場後續反應。</p></>,
                     technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>近期價格動能偏強，走勢維持向上。短期趨勢仍有支撐，但過去的上漲不代表下一期一定延續。</p></>
                   }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
                 }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
             </div>
           })}
+          <div className="market-year-trades"><div className="panel-header compact"><h2>當年度買賣紀錄</h2><span>{selectedTrades.length} 筆</span></div>{selectedTrades.length===0?<p>這個年度沒有股票或債券交易。</p>:<div className="market-trade-scroll">{selectedTrades.map((t,i)=><div className="market-trade-row" key={i}><strong>{t.side}｜{t.label}</strong><span>{t.quantity} {t.asset==='stocks'?'股':'張'} · {t.price.toFixed(2)}</span><em>NT{roundMoney(t.amount).toLocaleString('en-US')}</em></div>)}</div>}</div>
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
-          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,marketSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
+          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,selectedSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
               {[
                 ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
                 ['flow','籌碼面',signalLabel(research.flow,'需求偏強','需求偏弱')],
@@ -1082,10 +1103,10 @@ export default function Page() {
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
               ].map(([key,label,status])=><button key={key} onClick={()=>{
                 const bodies:Record<string,React.ReactNode>={
-                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
-                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>目前避險資金需求有限，債券買盤沒有明顯增強。若市場風險升高，高品質政府債可能獲得較多資金支持。</p></>,
+                  fundamental:<><p>景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
+                  flow:<><p>{signalLabel(-selectedSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>目前避險資金需求有限，債券買盤沒有明顯增強。若市場風險升高，高品質政府債可能獲得較多資金支持。</p></>,
                   news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>近期央行、通膨與信用消息整體影響有限。若出現升息、降評級或通膨升溫，債券價格可能面臨較大壓力。</p></>,
-                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>目前利率水準對既有債券價格形成一定壓力。若利率繼續上升，長天期債券通常會比短天期債券承受更大的價格波動。</p></>
+                  rate:<><p>政策利率 {(selectedSignals.policyRate*100).toFixed(1)}% · 通膨 {(selectedSignals.inflation*100).toFixed(1)}%</p><p>目前利率水準對既有債券價格形成一定壓力。若利率繼續上升，長天期債券通常會比短天期債券承受更大的價格波動。</p></>
                 }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
