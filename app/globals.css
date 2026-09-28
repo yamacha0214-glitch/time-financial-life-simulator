@@ -52,3 +52,13 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 .market-year-picker{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:12px;margin:4px 0 18px;padding:14px;border:1px solid #2d4561;border-radius:16px;background:#0c1725}.market-year-picker label{font-weight:800;color:#dce9f8}.market-year-picker select{width:100%;min-width:0;background:#101d2d;color:#eef5ff;border:1px solid #36506d;border-radius:13px;padding:12px 14px;font:inherit;font-weight:700}.market-year-trades{margin:18px 0;padding:14px;border:1px solid #293f59;border-radius:16px;background:#0b1624}.market-year-trades>p{color:#91a5bc}.market-trade-scroll{max-height:220px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;display:grid;gap:8px}.market-trade-row{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border-radius:11px;background:#111f30}.market-trade-row span{color:#98a9bd}.market-trade-row em{font-style:normal;color:#dce7f5}@media(max-width:520px){.market-year-picker{grid-template-columns:1fr}.market-trade-row{grid-template-columns:1fr}.market-trade-row span,.market-trade-row em{font-size:13px}}
 
 .stock-lot-details{grid-column:1/-1;border:1px solid #2d4561;border-radius:12px;padding:10px 12px}.stock-lot-details summary{cursor:pointer;font-weight:800;color:#aebfd3}.stock-lot-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:9px 0;border-top:1px solid #263b53;color:#c8d5e5}.stock-lot-row:first-of-type{margin-top:9px}
+
+
+/* Interactive market chart */
+.interactive-chart{position:relative;margin-top:10px;padding-left:54px;touch-action:pan-y;user-select:none}
+.interactive-chart .price-chart{display:block;width:100%;height:210px}
+.chart-y-axis{position:absolute;left:0;top:0;bottom:0;width:50px;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;padding:2px 7px 2px 0;color:#8094ad;font-size:11px;font-variant-numeric:tabular-nums}
+.chart-crosshair{stroke:#8fa7c2;stroke-width:.45;stroke-dasharray:2 1;vector-effect:non-scaling-stroke}
+.chart-tooltip{position:absolute;top:10px;transform:translateX(-50%);z-index:3;display:grid;gap:2px;min-width:118px;padding:8px 10px;border:1px solid #49627e;border-radius:10px;background:#091421;color:#edf5ff;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.chart-tooltip strong{font-size:11px;color:#9db0c7;white-space:nowrap}.chart-tooltip span{font-size:14px;font-weight:900;font-variant-numeric:tabular-nums}
+@media(max-width:520px){.interactive-chart{padding-left:48px}.interactive-chart .price-chart{height:190px}.chart-y-axis{width:45px;font-size:10px}}
