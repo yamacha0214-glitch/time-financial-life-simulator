@@ -29,15 +29,20 @@ const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : 
 
 
 const buildPreGameMarket = () => {
+  const signals = buildMarketSignals();
   const stockPrices: Record<string, number> = {};
   const stockPriceHistory: Record<string, number[]> = {};
   Object.entries(STOCK_INITIAL_PRICES).forEach(([id, base]) => {
-    const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24, fundamental: 1.35, flow: 1.15 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12, fundamental: 0.75, flow: 0.7 } : { drift: 0.07, vol: 0.16, fundamental: 1.0, flow: 0.9 };
-      const fundamentalImpact = (signals.growth*0.9 + signals.earnings*0.55 - Math.max(0,signals.policyRate-0.025)*0.8) * profile.fundamental;
-      const flowImpact = signals.flows * 0.035 * profile.flow;
-      const newsImpact = signals.news * 0.045;
-      const sentimentImpact = signals.riskAppetite * 0.03;
-      const signalDrift = profile.drift + fundamentalImpact + flowImpact + newsImpact + sentimentImpact;
+    const profile = id === 'stock-tech'
+      ? { drift: 0.10, vol: 0.24, fundamental: 1.35, flow: 1.15 }
+      : id === 'stock-dividend'
+        ? { drift: 0.055, vol: 0.12, fundamental: 0.75, flow: 0.7 }
+        : { drift: 0.07, vol: 0.16, fundamental: 1.0, flow: 0.9 };
+    const fundamentalImpact = (signals.growth*0.9 + signals.earnings*0.55 - Math.max(0,signals.policyRate-0.025)*0.8) * profile.fundamental;
+    const flowImpact = signals.flows * 0.035 * profile.flow;
+    const newsImpact = signals.news * 0.045;
+    const sentimentImpact = signals.riskAppetite * 0.03;
+    const signalDrift = profile.drift + fundamentalImpact + flowImpact + newsImpact + sentimentImpact;
     let price = base;
     const path = [price];
     for (let month = 0; month < 12; month++) {
@@ -48,14 +53,14 @@ const buildPreGameMarket = () => {
     stockPrices[id] = price;
     stockPriceHistory[id] = path;
   });
-  const rateShock = (Math.random()-0.5)*0.018;
+  const rateShock = (Math.random()-0.5)*0.018 + (signals.inflation-0.025)*0.15;
   const bondPrices: Record<string, number> = {};
   Object.entries(BOND_INITIAL_PRICES).forEach(([id, base]) => {
     const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
-    const creditShock = id === 'bond-corp' ? -(signals.creditSpread-marketSignals.creditSpread)*2.4 + signals.news*0.012 : signals.news*0.003;
+    const creditShock = id === 'bond-corp' ? -(signals.creditSpread-0.018)*1.8 + signals.news*0.012 : signals.news*0.003;
     bondPrices[id] = clamp(base * (1-duration*rateShock+creditShock),65,125);
   });
-  return { stockPrices, stockPriceHistory, bondPrices };
+  return { stockPrices, stockPriceHistory, bondPrices, signals };
 };
 
 type AssetKey = (typeof ASSET_KEYS)[number];
@@ -320,7 +325,7 @@ export default function Page() {
   const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
   const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
-  const [marketSignals, setMarketSignals] = useState<MarketSignals>(buildMarketSignals);
+  const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
 
   useEffect(() => {
     setIsMounted(true);
