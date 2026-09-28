@@ -274,7 +274,13 @@ export default function Page() {
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
   const liquidity = useMemo(() => getLiquidity(game.portfolio), [game.portfolio]);
-  const allocationList = useMemo(() => ASSET_KEYS.map((asset) => ({ asset, percentage: game.allocations[asset], amount: totalAssets * (game.allocations[asset] / 100) })), [game.allocations, totalAssets]);
+  // V2 display ratios always come from the CURRENT portfolio values.
+  // Never use the old target-allocation percentages for holdings display.
+  const allocationList = useMemo(() => ASSET_KEYS.map((asset) => ({
+    asset,
+    percentage: totalAssets > 0 ? (game.portfolio[asset] / totalAssets) * 100 : 0,
+    amount: game.portfolio[asset],
+  })), [game.portfolio, totalAssets]);
 
   const updateAllocationAmount = (asset: AssetKey, rawValue: string) => {
     if (game.completed) return;
@@ -717,7 +723,7 @@ export default function Page() {
                 <div className="holdings-strip">{productHoldings.map((holding) => <div className="holding-chip" key={holding.id}>
                   <strong>{holding.label.split('｜')[0]}</strong>
                   <span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
-                  <small>{holding.boughtAge} 歲購入 · 本金鎖定</small>
+                  <small>{holding.boughtAge} 歲購入 · 本金鎖定 · {totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small>
                 </div>)}</div>}
             </div>
             <div className="panel-header">
@@ -753,6 +759,14 @@ export default function Page() {
               : <details key={asset} className="product-drawer">
                   <summary><strong>{ASSET_META[asset].label}</strong><span>展開查看商品與持有部位</span></summary>
                   <div className="product-options">
+                    {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
+                      <div className="shop-label">目前持有倉位</div>
+                      {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
+                        <div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.boughtAge} 歲購入 · 本金鎖定</small></div>
+                        <div><b>NT${roundMoney(holding.amount).toLocaleString('en-US')}</b><small>{totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small></div>
+                      </div>)}
+                    </div>}
+                    <div className="shop-label">可購買商品</div>
                     {productCatalog[asset].map((product) => (
                       <div className="shop-product-card" key={product.id}>
                         <strong>{product.label}</strong>
