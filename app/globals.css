@@ -70,3 +70,5 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 
 .chart-range-end{min-width:0;width:100%;background:#101d2d;color:#eef5ff;border:1px solid #36506d;border-radius:12px;padding:10px;font-weight:800;text-align:center}
 .chart-range-note{margin:9px 0 0;color:#7f94ac;font-size:12px;line-height:1.5}
+
+.advance-year-button{width:min(420px,100%);min-height:68px!important;padding:16px 28px!important;font-size:20px;border-radius:18px!important}.cta-row:has(.advance-year-button){justify-content:center;margin-top:20px;margin-bottom:8px}@media(max-width:760px){.advance-year-button{width:100%;min-height:72px!important;font-size:20px}}
