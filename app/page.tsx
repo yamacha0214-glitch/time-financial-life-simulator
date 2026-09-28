@@ -255,6 +255,7 @@ const asyncLoadGame = () => {
 export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
+  const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setIsMounted(true);
@@ -294,6 +295,28 @@ export default function Page() {
         },
       };
     });
+  };
+
+  const productCatalog: Record<Exclude<AssetKey, 'cash'>, Array<{ id: string; label: string }>> = {
+    deposit: [{ id: 'deposit-1', label: '一年期定存｜2.0%｜1年到期' }, { id: 'deposit-3', label: '三年期定存｜2.4%｜3年到期' }],
+    bonds: [{ id: 'bond-5', label: '5年期政府債券 A｜年息2.8%｜每年付息' }, { id: 'bond-10', label: '10年期政府債券 B｜年息3.2%｜每年付息' }, { id: 'bond-corp', label: '7年期投資級公司債 C｜年息4.1%｜每年付息' }],
+    stocks: [{ id: 'stock-world', label: '全球股票 ETF｜股息率約2.0%' }, { id: 'stock-tech', label: '科技成長 ETF｜股息率約0.8%' }, { id: 'stock-dividend', label: '高股息 ETF｜股息率約4.0%' }],
+    realEstate: [{ id: 'home-city', label: '都會小宅｜總價800萬｜頭期20%' }, { id: 'home-family', label: '郊區家庭宅｜總價1,200萬｜頭期20%' }],
+    insurance: [{ id: 'policy-5', label: '5年繳長期分紅保單｜早期流動性低' }, { id: 'policy-10', label: '10年繳長期分紅保單｜長期累積' }],
+  };
+
+  const buyProduct = (asset: Exclude<AssetKey, 'cash'>, productId: string) => {
+    const amount = Number(productAmounts[productId] || 0);
+    if (amount <= 0) return alert('請先輸入投入金額');
+    if (amount > game.portfolio.cash) return alert('現金不足');
+    setGame((current) => {
+      const nextPortfolio = { ...current.portfolio, cash: current.portfolio.cash - amount, [asset]: current.portfolio[asset] + amount };
+      const total = sumPortfolio(nextPortfolio);
+      const nextAllocations = { ...current.allocations };
+      ASSET_KEYS.forEach((key) => { nextAllocations[key] = total > 0 ? (nextPortfolio[key] / total) * 100 : 0; });
+      return { ...current, portfolio: nextPortfolio, allocations: nextAllocations, lifeStatus: `已購買商品，投入 NT${roundMoney(amount).toLocaleString('en-US')}。投入後不可直接修改本金。` };
+    });
+    setProductAmounts((current) => ({ ...current, [productId]: '' }));
   };
 
   const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
@@ -694,12 +717,16 @@ export default function Page() {
               : <details key={asset} className="product-drawer">
                   <summary><strong>{ASSET_META[asset].label}</strong><span>展開查看商品與持有部位</span></summary>
                   <div className="product-options">
-                    {asset === 'deposit' && <><button>一年期定存｜2.0%｜1 年到期</button><button>三年期定存｜2.4%｜3 年到期</button></>}
-                    {asset === 'bonds' && <><button>5 年期政府債券 A｜年息 2.8%｜每年付息</button><button>10 年期政府債券 B｜年息 3.2%｜每年付息</button><button>7 年期投資級公司債 C｜年息 4.1%｜每年付息</button></>}
-                    {asset === 'stocks' && <><button>全球股票 ETF｜股息率約 2.0%</button><button>科技成長 ETF｜股息率約 0.8%</button><button>高股息 ETF｜股息率約 4.0%</button></>}
-                    {asset === 'realEstate' && <><button>都會小宅｜總價 800 萬｜頭期 20%</button><button>郊區家庭宅｜總價 1,200 萬｜頭期 20%</button></>}
-                    {asset === 'insurance' && <><button>5 年繳長期分紅保單｜早期流動性低</button><button>10 年繳長期分紅保單｜長期累積</button></>}
-                    <p>商品買入後會形成獨立持倉；投入本金不可在此直接修改。下一階段將把購買、到期、Coupon／股息／租金現金流接入年度引擎。</p>
+                    {productCatalog[asset].map((product) => (
+                      <div className="shop-product-card" key={product.id}>
+                        <strong>{product.label}</strong>
+                        <div className="shop-buy-row">
+                          <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
+                          <button onClick={() => buyProduct(asset, product.id)}>購買</button>
+                        </div>
+                      </div>
+                    ))}
+                    <p>購買時才輸入投入金額；確認購買後形成持倉，不能再直接修改本金。</p>
                   </div>
                 </details>
             ))}
