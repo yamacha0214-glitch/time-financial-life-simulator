@@ -189,6 +189,7 @@ type HistoryEntry = {
   portfolio?: Portfolio;
   returnRate?: number;
   actions?: string[];
+  changes?: string[];
 };
 
 type PendingChoice = {
