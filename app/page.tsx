@@ -367,13 +367,24 @@ export default function Page() {
       let nextEventHistory = [...current.eventHistory, `${marketEvent.title}: ${marketEvent.blurb}`];
       let nextAnalysis = current.analysis;
 
+      // Salary and ordinary living costs matter every year, not only event years.
+      nextPortfolio.cash += Math.max(nextIncome - nextExpense, 0);
+      if (nextExpense > nextIncome) {
+        nextPortfolio = applyForcedSale(nextPortfolio, nextExpense - nextIncome, 'cash');
+      }
+
       const eventCost = lifeEvent.expense ?? 0;
 
       if (lifeEvent.expense && !lifeEvent.requiredChoice) {
         const canCover = getLiquidity(nextPortfolio) >= eventCost;
         if (canCover) {
-          nextPortfolio.cash = Math.max(nextPortfolio.cash - eventCost, 0);
-          nextLifeStatus = `${lifeEvent.title}：支出 NT$${roundMoney(eventCost).toLocaleString('en-US')}。`;
+          const fromCash = Math.min(nextPortfolio.cash, eventCost);
+          nextPortfolio.cash -= fromCash;
+          const shortfall = eventCost - fromCash;
+          if (shortfall > 0) {
+            nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'cash');
+          }
+          nextLifeStatus = `${lifeEvent.title}：支出 NT${roundMoney(eventCost).toLocaleString('en-US')}。`;
           nextAnalysis = `${lifeEvent.title}讓你更直覺理解現金流與人生事件的優先順序。`;
         } else {
           nextPortfolio = applyForcedSale(nextPortfolio, eventCost, 'cash');
@@ -399,14 +410,14 @@ export default function Page() {
           expense: nextExpense,
           lifeStatus: `${lifeEvent.title}：需要你做出資產處置選擇。`,
           inflationRate,
-          cumulativeInflation: current.cumulativeInflation + inflationRate,
+          cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
           marketEvent,
           lastLifeEvent: lifeEvent,
           pendingChoice,
           portfolio: nextPortfolio,
           eventHistory: nextEventHistory,
           analysis: nextAnalysis,
-          timeMachineUnlocked: current.timeMachineUnlocked || current.age >= 42,
+          timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
         };
       }
 
@@ -416,7 +427,7 @@ export default function Page() {
         year: current.year,
         age: current.age,
         total: finalTotal,
-        real: getRealWealth(finalTotal, current.cumulativeInflation + inflationRate),
+        real: getRealWealth(finalTotal, (1 + current.cumulativeInflation) * (1 + inflationRate) - 1),
         liquidity: getLiquidity(nextPortfolio),
         eventTitle: marketEvent.title,
       };
@@ -430,19 +441,19 @@ export default function Page() {
       const finalized: GameState = {
         ...current,
         age: nextAge,
-        year: current.year + 1,
+        year: current.year,
         portfolio: nextPortfolio,
         income: nextIncome,
         expense: nextExpense,
         lifeStatus: nextLifeStatus,
         inflationRate,
-        cumulativeInflation: current.cumulativeInflation + inflationRate,
+        cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
         eventHistory: nextEventHistory,
         history: newHistory,
         marketEvent,
         lastLifeEvent: lifeEvent,
         pendingChoice: null,
-        timeMachineUnlocked: current.timeMachineUnlocked || current.age >= 42,
+        timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
         marketCrisisCount: marketEvent.type === 'crisis' ? current.marketCrisisCount + 1 : current.marketCrisisCount,
         maxDrawdown,
         completed: nextAge >= 65,
@@ -479,11 +490,9 @@ export default function Page() {
       } else if (action === 'stocks') {
         if (nextPortfolio.stocks >= eventAmount) {
           nextPortfolio.stocks -= eventAmount;
-          nextPortfolio.cash += eventAmount;
         } else {
           const shortfall = eventAmount - nextPortfolio.stocks;
           nextPortfolio.stocks = 0;
-          nextPortfolio.cash += nextPortfolio.stocks;
           nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'stocks');
           increasedForcedSell += 1;
           status = `${current.lastLifeEvent.title}：股票不足，你被迫在低點賣出。`;
@@ -491,7 +500,6 @@ export default function Page() {
       } else if (action === 'bonds') {
         if (nextPortfolio.bonds >= eventAmount) {
           nextPortfolio.bonds -= eventAmount;
-          nextPortfolio.cash += eventAmount;
         } else {
           const shortfall = eventAmount - nextPortfolio.bonds;
           nextPortfolio.bonds = 0;
@@ -502,7 +510,6 @@ export default function Page() {
       } else if (action === 'realEstate') {
         if (nextPortfolio.realEstate >= eventAmount) {
           nextPortfolio.realEstate -= eventAmount;
-          nextPortfolio.cash += eventAmount;
         } else {
           const shortfall = eventAmount - nextPortfolio.realEstate;
           nextPortfolio.realEstate = 0;
@@ -513,7 +520,6 @@ export default function Page() {
       } else if (action === 'insurance') {
         if (nextPortfolio.insurance >= eventAmount) {
           nextPortfolio.insurance -= eventAmount;
-          nextPortfolio.cash += eventAmount;
         } else {
           const shortfall = eventAmount - nextPortfolio.insurance;
           nextPortfolio.insurance = 0;
@@ -525,9 +531,9 @@ export default function Page() {
         status = `${current.lastLifeEvent.title}：你延後計畫，保留資金，但未來的生活成本會更重。`;
       }
 
-      const nextAge = current.age + 1;
+      const nextAge = current.age;
       const newHistory = [...current.history, {
-        year: current.year,
+        year: current.year - 1,
         age: current.age,
         total: sumPortfolio(nextPortfolio),
         real: getRealWealth(sumPortfolio(nextPortfolio), current.cumulativeInflation + current.inflationRate),
@@ -749,6 +755,22 @@ export default function Page() {
               </div>
             </div>
           </div>
+        )}
+
+        {game.timeMachineUnlocked && !game.completed && (
+          <section className="panel" style={{ marginTop: 18 }}>
+            <div className="eyebrow">TIME MACHINE UNLOCKED</div>
+            <h2>時間本身，也是一種金融資源。</h2>
+            <p>
+              當一部分資金可以承受較低的短期流動性，資產配置就能拉長投資期限。
+              這不是免費報酬，而是用流動性換取不同的長期投資能力。
+            </p>
+            <div className="mini-badges">
+              <span className="badge">Liquidity ↓</span>
+              <span className="badge">Time ↑</span>
+              <span className="badge">Long-term Capacity ↑</span>
+            </div>
+          </section>
         )}
 
         {game.completed && (
