@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const STORAGE_KEY = 'time-financial-life-simulator-v1';
+const STORAGE_KEY = 'time-financial-life-simulator-v2';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 type AssetKey = (typeof ASSET_KEYS)[number];
 type Portfolio = Record<AssetKey, number>;
@@ -74,21 +74,21 @@ type GameState = {
 };
 
 const BASE_PORTFOLIO: Portfolio = {
-  cash: 250000,
-  deposit: 200000,
-  bonds: 150000,
-  stocks: 200000,
-  realEstate: 150000,
-  insurance: 50000,
+  cash: 1000000,
+  deposit: 0,
+  bonds: 0,
+  stocks: 0,
+  realEstate: 0,
+  insurance: 0,
 };
 
 const START_ALLOCATIONS: Allocation = {
-  cash: 25,
-  deposit: 20,
-  bonds: 15,
-  stocks: 20,
-  realEstate: 15,
-  insurance: 5,
+  cash: 100,
+  deposit: 0,
+  bonds: 0,
+  stocks: 0,
+  realEstate: 0,
+  insurance: 0,
 };
 
 const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: number }> = {
@@ -96,8 +96,8 @@ const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: nu
   deposit: { label: '定存', short: 'Deposit', liquidity: 0.95 },
   bonds: { label: '債券', short: 'Bonds', liquidity: 0.8 },
   stocks: { label: '股票', short: 'Stocks', liquidity: 0.7 },
-  realEstate: { label: '房地產', short: 'Real Estate', liquidity: 0.35 },
-  insurance: { label: '長期保險', short: 'Insurance', liquidity: 0.2 },
+  realEstate: { label: '房地產', short: 'Real Estate · 低流動性', liquidity: 0.35 },
+  insurance: { label: '長期保險', short: 'Insurance · 長期契約', liquidity: 0.2 },
 };
 
 const MARKET_EVENTS: MarketEvent[] = [
@@ -614,7 +614,7 @@ export default function Page() {
       <div className="app-wrap">
         <header className="topbar">
           <div>
-            <div className="eyebrow">TIME</div>
+            <div className="eyebrow">TIME · V2 DEVELOPMENT</div>
             <h1>金融人生模擬器</h1>
           </div>
           <div className="header-actions">
