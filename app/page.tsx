@@ -645,6 +645,31 @@ export default function Page() {
     if (maturingBonds.length) setProductHoldings((current)=>current.filter((h)=>!maturingBonds.some((m)=>m.id===h.id)));
     setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace}, eventHistory:[...current.eventHistory, ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
 
+    // Real estate: price, mortgage and rental results are simulated once per year.
+    let propertyCashFlow=0;
+    let propertyEquity=0;
+    const nextProperties=propertyHoldings.map((p)=>{
+      const appreciation=clamp(0.025+signals.growth*0.9-signals.policyRate*0.45+p.populationTrend*1.5+productNoise(0.035),-0.12,0.14);
+      const currentValue=Math.max(500000,p.currentValue*(1+appreciation));
+      const monthlyRate=p.mortgageRate/12;
+      const months=p.mortgageYears*12;
+      const payment=p.mortgageBalance>0 ? p.mortgageBalance*(monthlyRate*Math.pow(1+monthlyRate,months))/(Math.pow(1+monthlyRate,months)-1) : 0;
+      let balance=p.mortgageBalance, annualMortgage=0;
+      for(let m=0;m<12 && balance>0;m++){const interest=balance*monthlyRate;const principal=Math.min(balance,Math.max(0,payment-interest));balance-=principal;annualMortgage+=interest+principal;}
+      let rentedMonths=0, rentalIncome=0;
+      if(p.rentalMode==='rent'){
+        const priceRatio=p.monthlyRent/Math.max(1,p.marketRent);
+        const occupancy=clamp(p.demand-(priceRatio-1)*0.85+signals.growth*0.8+productNoise(0.12),0.05,1);
+        rentedMonths=Math.max(0,Math.min(12,Math.round(occupancy*12)));
+        rentalIncome=p.monthlyRent*rentedMonths;
+      }
+      propertyCashFlow += rentalIncome-annualMortgage;
+      propertyEquity += Math.max(0,currentValue-balance);
+      return {...p,currentValue,mortgageBalance:balance,lastRentedMonths:rentedMonths,lastRentalIncome:rentalIncome,mortgageRate:Math.max(0.018,signals.policyRate*0.55+0.012)};
+    });
+    if(nextProperties.length) setPropertyHoldings(nextProperties);
+    setPropertyListings(buildPropertyMarket(signals,game.year));
+
     // Participating policies are recurring premium contracts.
     // The first entered amount becomes the fixed annual premium for the full premium term.
     const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
@@ -714,10 +739,10 @@ export default function Page() {
         // Stocks and bonds are valued from their discrete holdings/market engines above.
         stocks: stockMarketValue,
         bonds: Math.max(0, bondMarketValue - maturedFace),
-        realEstate: rebalanced.realEstate * (1 + reReturn),
+        realEstate: nextProperties.length ? propertyEquity : rebalanced.realEstate * (1 + reReturn),
         insurance: rebalanced.insurance * (1 + insuranceReturn),
       };
-      nextPortfolio.cash += bondCoupons + maturedFace;
+      nextPortfolio.cash += bondCoupons + maturedFace + propertyCashFlow;
 
       const report = buildAnnualReport(current.year, current.age, signals);
       const nextLifeStatus = report.summary;
