@@ -62,3 +62,8 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 .chart-tooltip{position:absolute;top:10px;transform:translateX(-50%);z-index:3;display:grid;gap:2px;min-width:118px;padding:8px 10px;border:1px solid #49627e;border-radius:10px;background:#091421;color:#edf5ff;pointer-events:none;box-shadow:0 6px 18px rgba(0,0,0,.28)}
 .chart-tooltip strong{font-size:11px;color:#9db0c7;white-space:nowrap}.chart-tooltip span{font-size:14px;font-weight:900;font-variant-numeric:tabular-nums}
 @media(max-width:520px){.interactive-chart{padding-left:48px}.interactive-chart .price-chart{height:190px}.chart-y-axis{width:45px;font-size:10px}}
+
+.chart-range-panel{margin:-6px 0 22px;padding:14px;border:1px solid #2d4561;border-radius:16px;background:#0c1725}
+.chart-range-title{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:11px}.chart-range-title span{font-size:12px;color:#8fa3bb}
+.chart-range-controls{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px;align-items:center}.chart-range-controls select{min-width:0;width:100%;background:#101d2d;color:#eef5ff;border:1px solid #36506d;border-radius:12px;padding:10px;font:inherit;font-weight:700}.chart-range-controls>span{color:#7f94ac}
+.chart-range-shortcuts{display:flex;gap:7px;overflow-x:auto;margin-top:10px;padding-bottom:2px}.chart-range-shortcuts button{flex:0 0 auto;border:1px solid #334d69;border-radius:999px;background:#101d2d;color:#b8c8da;padding:7px 12px;font-weight:800}.chart-range-shortcuts button:active{background:#1b3047}
