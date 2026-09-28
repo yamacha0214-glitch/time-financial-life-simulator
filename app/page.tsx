@@ -47,11 +47,6 @@ const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
 const stableNoise = (key:string, scale=1) => {
   let h=2166136261;
   for(let i=0;i<key.length;i++){h^=key.charCodeAt(i);h=Math.imul(h,16777619)}
-  const selectedMarketYear = marketYear ?? (marketSnapshots[marketSnapshots.length-1]?.year ?? 0);
-  const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
-  const selectedSignals = selectedMarket?.signals ?? marketSignals;
-  const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
-
   return ((((h>>>0)%10000)/9999)*2-1)*scale;
 };
 const stockResearch = (id:string, signals:MarketSignals, hist:number[]) => {
@@ -874,6 +869,11 @@ export default function Page() {
   };
 
   const canAdvance = !game.pendingChoice && !game.completed && allocationValid;
+
+  const selectedMarketYear = marketYear ?? (marketSnapshots[marketSnapshots.length-1]?.year ?? 0);
+  const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
+  const selectedSignals = selectedMarket?.signals ?? marketSignals;
+  const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
 
   return (
     <main className="page-shell">
