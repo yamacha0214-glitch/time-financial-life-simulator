@@ -1141,11 +1141,7 @@ export default function Page() {
             ))}
 
             <div className="cta-row">
-              <div className="panel" style={{marginBottom:12}}>
-                <div className="eyebrow">V2 CORE MODEL</div>
-                <p>接下來的 V2 將改成 CASH FLOW → DECISION → TIME。現有資產會持續存在，玩家只能用可用現金買入新資產，賣出後才會回到現金。</p>
-              </div>
-              <button className="primary" disabled={!canAdvance} onClick={advanceYear}>
+              <button className="primary advance-year-button" disabled={!canAdvance} onClick={advanceYear}>
                 讓時間前進一年 →
               </button>
             </div>
