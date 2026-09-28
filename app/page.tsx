@@ -257,6 +257,8 @@ export default function Page() {
   const [isMounted, setIsMounted] = useState(false);
   const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
   const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number }>>([]);
+  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number }>>([]);
+  const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
 
   useEffect(() => {
     setIsMounted(true);
@@ -324,7 +326,11 @@ export default function Page() {
       return { ...current, portfolio: nextPortfolio, allocations: nextAllocations, lifeStatus: `已購買商品，投入 NT${roundMoney(amount).toLocaleString('en-US')}。投入後不可直接修改本金。` };
     });
     const product = productCatalog[asset].find((item) => item.id === productId);
-    if (product) setProductHoldings((current) => [...current, { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age }]);
+    if (product) {
+      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age };
+      setProductHoldings((current) => [...current, purchase]);
+      setProductHistory((current) => [...current, purchase]);
+    }
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
   };
 
@@ -718,13 +724,25 @@ export default function Page() {
         <section className="layout">
           <div className="panel allocations-panel">
             <div className="holdings-status">
-              <div className="panel-header"><h2>目前持有商品</h2><span>{productHoldings.length} 筆持倉</span></div>
-              {productHoldings.length === 0 ? <p className="empty-holdings">目前尚未購買任何金融商品，資金仍以現金持有。</p> :
-                <div className="holdings-strip">{productHoldings.map((holding) => <div className="holding-chip" key={holding.id}>
-                  <strong>{holding.label.split('｜')[0]}</strong>
-                  <span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
-                  <small>{holding.boughtAge} 歲購入 · 本金鎖定 · {totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small>
-                </div>)}</div>}
+              <div className="holdings-tabs">
+                <button className={holdingView === 'current' ? 'active' : ''} onClick={() => setHoldingView('current')}>當下持有</button>
+                <button className={holdingView === 'history' ? 'active' : ''} onClick={() => setHoldingView('history')}>歷史紀錄</button>
+              </div>
+              {holdingView === 'current' ? <>
+                <div className="panel-header"><h2>當下持有</h2><span>{productHoldings.length} 筆持倉</span></div>
+                {productHoldings.length === 0 ? <p className="empty-holdings">目前沒有持有中的金融商品。</p> :
+                  <div className="holdings-strip">{productHoldings.map((holding) => <div className="holding-chip" key={holding.id}>
+                    <strong>{holding.label.split('｜')[0]}</strong><span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
+                    <small>{holding.boughtAge} 歲購入 · {totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small>
+                  </div>)}</div>}
+              </> : <>
+                <div className="panel-header"><h2>歷史紀錄</h2><span>累計 {productHistory.length} 筆</span></div>
+                {productHistory.length === 0 ? <p className="empty-holdings">目前還沒有任何購買紀錄。</p> :
+                  <div className="holdings-strip">{[...productHistory].reverse().map((holding) => <div className="holding-chip history-chip" key={'history-'+holding.id}>
+                    <strong>{holding.label.split('｜')[0]}</strong><span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
+                    <small>{holding.boughtAge} 歲購入 · 永久保留購買紀錄</small>
+                  </div>)}</div>}
+              </>}
             </div>
             <div className="panel-header">
               <h2>V2 開發分支：資產持有與交易</h2>
