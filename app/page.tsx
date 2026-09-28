@@ -920,7 +920,7 @@ export default function Page() {
           </div>
         </header>
 
-        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>遊戲主畫面</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
+        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>資產總表</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
         {mainView === 'game' ? <>
         <section className="stats-row">
           <div className="stat-card">
