@@ -1048,7 +1048,6 @@ export default function Page() {
           <div className="stat-card">
             <span>年度新增資金</span>
             <strong>NT$300,000</strong>
-            <small>每年前進一年後，自動加入現金</small>
           </div>
         </section>
 
