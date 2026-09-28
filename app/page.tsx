@@ -201,24 +201,6 @@ const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: nu
   insurance: { label: '長期保險', short: 'Insurance · 長期契約', liquidity: 0.2 },
 };
 
-const MARKET_EVENTS: MarketEvent[] = [
-  { title: '全球牛市', blurb: '科技與企業信心回升，股市走高。', effect: { stocks: 0.25 }, type: 'bull' },
-  { title: '全球金融危機', blurb: '信貸市場收縮，風險資產遭受重擊。', effect: { stocks: -0.42, realEstate: -0.15 }, type: 'crisis' },
-  { title: '央行快速升息', blurb: '利率快速上升，債券價格下滑，房市承壓。', effect: { bonds: -0.12, realEstate: -0.08, deposit: 0.12 }, type: 'rate' },
-  { title: '高通膨', blurb: '物價節節攀升，購買力受到壓迫。', effect: { cash: -0.07 }, type: 'inflation' },
-  { title: '經濟衰退', blurb: '企業獲利放緩，失業率上升，資產價格承壓。', effect: { stocks: -0.22, realEstate: -0.12 }, type: 'recession' },
-  { title: '房市熱潮', blurb: '購屋需求強勁，房價上揚。', effect: { realEstate: 0.18 }, type: 'bull' },
-  { title: '科技龍頭表現強勁', blurb: '大型科技股帶動市場情緒。', effect: { stocks: 0.19 }, type: 'bull' },
-  { title: '信用緊縮', blurb: '債券市場開始要求更高風險溢酬。', effect: { bonds: -0.18, stocks: -0.1 }, type: 'crisis' },
-  { title: '大宗商品上漲', blurb: '能源與原物料拉高通膨壓力。', effect: { cash: -0.08, realEstate: 0.04 }, type: 'inflation' },
-  { title: '政策刺激', blurb: '政府與央行放水，資產市場回暖。', effect: { stocks: 0.14, bonds: 0.06 }, type: 'bull' },
-  { title: '債券殖利率急升', blurb: '長債價格下降，但定存收益變好。', effect: { bonds: -0.2, deposit: 0.14 }, type: 'rate' },
-  { title: '匯率震盪', blurb: '出口產業受益，但消費壓力增加。', effect: { stocks: 0.08, realEstate: -0.05 }, type: 'recession' },
-  { title: '消費者信心改善', blurb: '民間消費重啟，企業獲利回升。', effect: { stocks: 0.16, realEstate: 0.07 }, type: 'bull' },
-  { title: '地產交易稀少', blurb: '市場觀望情緒強，房價壓力加大。', effect: { realEstate: -0.2 }, type: 'recession' },
-  { title: '穩定成長環境', blurb: '景氣緩步回升，各資產輪動呈現平衡。', effect: { bonds: 0.06, stocks: 0.1, realEstate: 0.04 }, type: 'bull' },
-];
-
 const LIFE_EVENTS: LifeEvent[] = [
   { title: '出國進修', description: '你決定在 29 歲前往海外進修，開始一段學術旅程。', expense: 400000, requiredChoice: false },
   { title: '婚禮與新家庭', description: '你結婚了，婚禮與新生活支出開始增加。', expense: 300000, requiredChoice: false },
@@ -644,32 +626,35 @@ export default function Page() {
       const totalBefore = sumPortfolio(current.portfolio);
       const rebalanced = { ...current.portfolio };
 
-      const inflationRate = clamp(0.018 + Math.random() * 0.06, 0.01, 0.08);
-      const marketEvent = randomFrom(MARKET_EVENTS);
-      // V2 focus: market conditions and asset allocation only.
-      // No salary, living expense, or random life-event cash-flow system.
+      // One market world: the same MarketSignals drive the annual report and asset behaviour.
+      const inflationRate = signals.inflation;
+      const reReturn = clamp(
+        0.035 + signals.growth*1.25 - signals.policyRate*0.65 - signals.creditSpread*0.35 + productNoise(0.045),
+        -0.16, 0.18
+      );
+      const insuranceReturn = clamp(
+        0.04 + signals.growth*0.30 - signals.creditSpread*0.18 + productNoise(0.018),
+        0.005, 0.075
+      );
+      const cashReturn = Math.max(0, signals.policyRate*0.45);
+      const depositReturn = Math.max(0.005, signals.policyRate*0.72);
 
-      const baseReturns: Record<AssetKey, number> = {
-        cash: 0.014 + inflationRate * 0.2,
-        deposit: 0.025 + (Math.random() * 0.04),
-        bonds: 0,
-        stocks: 0,
-        realEstate: 0.045 + (Math.random() * 0.09),
-        insurance: 0.038 + (Math.random() * 0.05),
+      let nextPortfolio: Portfolio = {
+        ...rebalanced,
+        cash: rebalanced.cash * (1 + cashReturn),
+        deposit: rebalanced.deposit * (1 + depositReturn),
+        // Stocks and bonds are valued from their discrete holdings/market engines above.
+        stocks: stockMarketValue,
+        bonds: Math.max(0, bondMarketValue - maturedFace),
+        realEstate: rebalanced.realEstate * (1 + reReturn),
+        insurance: rebalanced.insurance * (1 + insuranceReturn),
       };
+      nextPortfolio.cash += bondCoupons + maturedFace;
 
-      let assetsAfterMarket: Portfolio = { ...rebalanced };
-      ASSET_KEYS.forEach((key) => {
-        const modifier = (key === 'stocks' || key === 'bonds') ? 0 : (marketEvent.effect[key] ?? 0);
-        assetsAfterMarket[key] = rebalanced[key] * (1 + baseReturns[key] + modifier);
-      });
-
-      let nextPortfolio = { ...assetsAfterMarket };
-      const nextIncome = 0;
-      const nextExpense = 0;
-      const nextLifeStatus = `${marketEvent.title}：${marketEvent.blurb}`;
-      const nextEventHistory = [...current.eventHistory, `${marketEvent.title}: ${marketEvent.blurb}`];
-      const nextAnalysis = '本年度只反映市場環境與既有金融商品的現金流，不額外加入薪資、生活支出或人生事件。';
+      const report = buildAnnualReport(current.year, current.age, signals);
+      const nextLifeStatus = report.summary;
+      const nextEventHistory = [...current.eventHistory, `第 ${current.year} 年金融年報：${report.summary}`];
+      const nextAnalysis = '本年度資產表現與金融年報共用同一組市場訊號，不再由單一隨機事件額外修改資產價格。';
 
       const finalTotal = sumPortfolio(nextPortfolio);
       const nextAge = current.age + 1;
@@ -679,7 +664,7 @@ export default function Page() {
         total: finalTotal,
         real: getRealWealth(finalTotal, (1 + current.cumulativeInflation) * (1 + inflationRate) - 1),
         liquidity: getLiquidity(nextPortfolio),
-        eventTitle: marketEvent.title,
+        eventTitle: `第 ${current.year} 年金融年報`,
       };
 
       const newHistory = [...current.history, nextHistory];
@@ -700,11 +685,11 @@ export default function Page() {
         cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
         eventHistory: nextEventHistory,
         history: newHistory,
-        marketEvent,
+        marketEvent: null,
         lastLifeEvent: null,
         pendingChoice: null,
         timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
-        marketCrisisCount: marketEvent.type === 'crisis' ? current.marketCrisisCount + 1 : current.marketCrisisCount,
+        marketCrisisCount: (signals.growth < 0 && signals.riskAppetite < -0.55) ? current.marketCrisisCount + 1 : current.marketCrisisCount,
         maxDrawdown,
         completed: nextAge >= 65,
       };
