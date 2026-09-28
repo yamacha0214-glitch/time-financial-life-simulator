@@ -274,38 +274,32 @@ export default function Page() {
   const liquidity = useMemo(() => getLiquidity(game.portfolio), [game.portfolio]);
   const allocationList = useMemo(() => ASSET_KEYS.map((asset) => ({ asset, percentage: game.allocations[asset], amount: totalAssets * (game.allocations[asset] / 100) })), [game.allocations, totalAssets]);
 
-  const updateAllocation = (asset: AssetKey, delta: number) => {
+  const updateAllocationAmount = (asset: AssetKey, rawValue: string) => {
     if (game.completed) return;
+    const cleaned = rawValue.replace(/[^0-9]/g, '');
+    const amount = cleaned === '' ? 0 : Number(cleaned);
+
     setGame((current) => {
-      const next = normalizeAllocations({
-        ...current.allocations,
-        [asset]: clamp(current.allocations[asset] + delta, 0, 100),
-      });
+      const total = sumPortfolio(current.portfolio);
+      if (total <= 0) return current;
 
-      const otherKeys = ASSET_KEYS.filter((key) => key !== asset);
-      const currentTotal = otherKeys.reduce((sum, key) => sum + next[key], 0);
-      if (currentTotal <= 0) {
-        return current;
-      }
-
-      const adjusted = { ...next };
-      const remaining = 100 - next[asset];
-      const otherTotal = otherKeys.reduce((sum, key) => sum + next[key], 0);
-      otherKeys.forEach((key) => {
-        adjusted[key] = (next[key] / otherTotal) * remaining;
-      });
-      adjusted[asset] = clamp(next[asset], 0, 100);
-
-      const rounded = { ...adjusted } as Allocation;
-      const totalPercent = ASSET_KEYS.reduce((sum, key) => sum + rounded[key], 0);
-      const diff = 100 - totalPercent;
-      if (Math.abs(diff) > 0.01) {
-        rounded.cash += diff;
-      }
-
-      return { ...current, allocations: normalizeAllocations(rounded) };
+      // The player enters actual NT$ amounts. We convert that amount to a target
+      // allocation percentage without silently changing any other asset.
+      const nextPercent = clamp((amount / total) * 100, 0, 100);
+      return {
+        ...current,
+        allocations: {
+          ...current.allocations,
+          [asset]: nextPercent,
+        },
+      };
     });
   };
+
+  const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
+  const allocationAmountTotal = totalAssets * (allocationTotal / 100);
+  const allocationDifference = totalAssets - allocationAmountTotal;
+  const allocationValid = Math.abs(allocationDifference) < 1;
 
   const handleRestart = () => {
     const fresh = buildInitialState();
@@ -613,7 +607,7 @@ export default function Page() {
     return '你正在處理風險、流動性與時間資源之間的取捨。';
   };
 
-  const canAdvance = !game.pendingChoice && !game.completed;
+  const canAdvance = !game.pendingChoice && !game.completed && allocationValid;
 
   return (
     <main className="page-shell">
@@ -669,7 +663,7 @@ export default function Page() {
           <div className="panel allocations-panel">
             <div className="panel-header">
               <h2>資產配置</h2>
-              <span>總配置必須 100%</span>
+              <span className={allocationValid ? '' : 'allocation-warning'}>{allocationValid ? '配置完成 ✓' : `尚差 NT${roundMoney(Math.abs(allocationDifference)).toLocaleString('en-US')} ${allocationDifference > 0 ? '未配置' : '超額配置'}`}</span>
             </div>
             {allocationList.map(({ asset, percentage, amount }) => (
               <div key={asset} className="allocation-row">
@@ -678,17 +672,21 @@ export default function Page() {
                   <div className="asset-subtitle">{ASSET_META[asset].short}</div>
                 </div>
 
-                <div className="control-box">
-                  <button onClick={() => updateAllocation(asset, -5)} aria-label={`Decrease ${ASSET_META[asset].label}`}>
-                    −5%
-                  </button>
-                  <div className="value-box">
-                    <strong>{percentage.toFixed(0)}%</strong>
-                    <span>≈ NT${roundMoney(amount).toLocaleString('en-US')}</span>
+                <div className="control-box amount-control">
+                  <label className="money-input-wrap">
+                    <span>NT$</span>
+                    <input
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={roundMoney(amount)}
+                      onChange={(event) => updateAllocationAmount(asset, event.target.value)}
+                      aria-label={`${ASSET_META[asset].label}配置金額`}
+                    />
+                  </label>
+                  <div className="value-box compact-value">
+                    <strong>{percentage.toFixed(1)}%</strong>
+                    <span>占總資產</span>
                   </div>
-                  <button onClick={() => updateAllocation(asset, 5)} aria-label={`Increase ${ASSET_META[asset].label}`}>
-                    +5%
-                  </button>
                 </div>
               </div>
             ))}
