@@ -360,7 +360,6 @@ export default function Page() {
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const [chartHover, setChartHover] = useState<{id:string; index:number} | null>(null);
   const [chartStartYear, setChartStartYear] = useState(0);
-  const [chartEndYear, setChartEndYear] = useState<number | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
     else setResearchOverlay({key,title,body});
@@ -899,12 +898,12 @@ export default function Page() {
   const selectedSignals = selectedMarket?.signals ?? marketSignals;
   const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
   const availableMarketYears = marketSnapshots.map((x)=>x.year).sort((a,b)=>a-b);
-  const latestMarketYear = availableMarketYears[availableMarketYears.length-1] ?? 0;
-  const effectiveChartEndYear = chartEndYear ?? latestMarketYear;
-  const chartStartSnapshot = marketSnapshots.find((x)=>x.year===chartStartYear) ?? marketSnapshots[0];
-  const chartEndSnapshot = marketSnapshots.find((x)=>x.year===effectiveChartEndYear) ?? marketSnapshots[marketSnapshots.length-1];
-  const chartRangeSnapshots = marketSnapshots.filter((x)=>x.year>=chartStartSnapshot.year && x.year<=chartEndSnapshot.year).sort((a,b)=>a.year-b.year);
+  const effectiveChartEndYear = selectedMarketYear;
+  const chartStartSnapshot = marketSnapshots.find((x)=>x.year===Math.min(chartStartYear,effectiveChartEndYear)) ?? marketSnapshots[0];
+  const chartEndSnapshot = marketSnapshots.find((x)=>x.year===effectiveChartEndYear) ?? selectedMarket;
+  const chartRangeSnapshots = marketSnapshots.filter((x)=>x.year>=chartStartSnapshot.year && x.year<=effectiveChartEndYear).sort((a,b)=>a.year-b.year);
   const chartYearLabel = (year:number) => year===0 ? '遊戲開始前一年' : `${marketSnapshots.find((x)=>x.year===year)?.age ?? 24+year}歲`;
+  const setChartLookback = (years:number) => setChartStartYear(Math.max(0,effectiveChartEndYear-years+1));
 
   return (
     <main className="page-shell">
@@ -1094,8 +1093,8 @@ export default function Page() {
 
         </> : <section className="panel stock-market-page">
           <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>{selectedMarketYear===0?'PRE-GAME':`YEAR ${selectedMarketYear}`}</span></div>
-          <div className="market-year-picker"><label htmlFor="market-year">檢視年度</label><select id="market-year" value={selectedMarketYear} onChange={(e)=>{setMarketYear(Number(e.target.value));setResearchOverlay(null)}}>{[...marketSnapshots].reverse().map((x)=><option key={x.year} value={x.year}>{x.year===0?'遊戲開始前一年｜市場背景':`第 ${x.year} 年｜${x.age}歲`}</option>)}</select></div>
-          <div className="chart-range-panel"><div className="chart-range-title"><strong>走勢圖期間</strong><span>自由比較跨年度價格</span></div><div className="chart-range-controls"><select aria-label="圖表起始年份" value={chartStartSnapshot.year} onChange={(e)=>{const y=Number(e.target.value);setChartStartYear(y);if(y>effectiveChartEndYear)setChartEndYear(y)}}>{availableMarketYears.filter(y=>y<=effectiveChartEndYear).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select><span>→</span><select aria-label="圖表結束年份" value={effectiveChartEndYear} onChange={(e)=>{const y=Number(e.target.value);setChartEndYear(y);if(y<chartStartSnapshot.year)setChartStartYear(y)}}>{availableMarketYears.filter(y=>y>=chartStartSnapshot.year).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select></div><div className="chart-range-shortcuts">{[1,3,5,10].map(n=><button key={n} onClick={()=>setChartStartYear(Math.max(0,effectiveChartEndYear-n+1))}>{n}年</button>)}<button onClick={()=>{setChartStartYear(0);setChartEndYear(latestMarketYear)}}>全部</button></div></div>
+          <div className="market-year-picker"><label htmlFor="market-year">檢視年度</label><select id="market-year" value={selectedMarketYear} onChange={(e)=>{const y=Number(e.target.value);setMarketYear(y);setChartStartYear((s)=>Math.min(s,y));setResearchOverlay(null)}}>{[...marketSnapshots].reverse().map((x)=><option key={x.year} value={x.year}>{x.year===0?'遊戲開始前一年｜市場背景':`第 ${x.year} 年｜${x.age}歲`}</option>)}</select></div>
+          <div className="chart-range-panel"><div className="chart-range-title"><strong>走勢圖期間</strong><span>終點跟隨檢視年度</span></div><div className="chart-range-controls chart-range-controls-single"><select aria-label="圖表起始年份" value={chartStartSnapshot.year} onChange={(e)=>setChartStartYear(Number(e.target.value))}>{availableMarketYears.filter(y=>y<=effectiveChartEndYear).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select><span>→</span><div className="chart-range-end">{chartYearLabel(effectiveChartEndYear)}</div></div><div className="chart-range-shortcuts">{[1,3,5,10].map(n=><button key={n} onClick={()=>setChartLookback(n)}>{n}年</button>)}<button onClick={()=>setChartStartYear(0)}>全部</button></div><p className="chart-range-note">圖表不會顯示檢視年度之後的未來資料。</p></div>
           {productCatalog.stocks.map((product) => {
             const price=selectedMarket?.stockPrices[product.id]||stockPrices[product.id]||100;
             const selectedHist=selectedMarket?.stockPaths[product.id]||stockPriceHistory[product.id]||[100];
