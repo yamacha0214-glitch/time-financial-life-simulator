@@ -26,6 +26,23 @@ const buildMarketSignals = (): MarketSignals => ({
 });
 
 const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
+const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
+const stockResearch = (id:string, signals:MarketSignals, hist:number[]) => {
+  const techBias = id === 'stock-tech' ? 0.06 : id === 'stock-dividend' ? -0.025 : 0;
+  const dividendBias = id === 'stock-dividend' ? 0.06 : 0;
+  const fundamental = signals.earnings + signals.growth*1.4 - signals.policyRate*0.45 + techBias + productNoise(0.18);
+  const flow = signals.flows*0.55 + signals.riskAppetite*(id==='stock-tech'?0.35:0.18) + productNoise(0.65);
+  const news = signals.news*0.45 + dividendBias + productNoise(0.8);
+  const recent = hist.length>2 ? hist[hist.length-1]/hist[Math.max(0,hist.length-7)]-1 : 0;
+  const technical = recent*4 + productNoise(0.55);
+  return {fundamental,flow,news,technical};
+};
+const bondResearch = (id:string, signals:MarketSignals) => ({
+  fundamental: (id==='bond-corp'?signals.growth*3-signals.creditSpread*4: -signals.inflation*1.2) + productNoise(0.25),
+  flow: -signals.riskAppetite*0.45 + productNoise(0.65),
+  news: signals.news*(id==='bond-corp'?0.6:0.25)+productNoise(0.65),
+  rate: (0.035-signals.policyRate)*12 + productNoise(0.25),
+});
 
 
 const buildPreGameMarket = () => {
@@ -42,7 +59,8 @@ const buildPreGameMarket = () => {
     const flowImpact = signals.flows * 0.035 * profile.flow;
     const newsImpact = signals.news * 0.045;
     const sentimentImpact = signals.riskAppetite * 0.03;
-    const signalDrift = profile.drift + fundamentalImpact + flowImpact + newsImpact + sentimentImpact;
+    const idiosyncratic = productNoise(id === 'stock-tech' ? 0.10 : 0.065);
+      const signalDrift = profile.drift + fundamentalImpact*0.62 + flowImpact*0.55 + newsImpact*0.45 + sentimentImpact*0.5 + idiosyncratic;
     let price = base;
     const path = [price];
     for (let month = 0; month < 12; month++) {
@@ -1010,14 +1028,15 @@ export default function Page() {
             const price=stockPrices[product.id]||100; const hist=stockPriceHistory[product.id]||[100];
             const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
             const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
+            const research=stockResearch(product.id,marketSignals,hist);
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
               <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
               <div className="market-years"><span>遊戲開始前 1 年</span><span>現在 {game.age}歲</span></div>
-              <div className="research-grid"><span>基本面 <b>{marketSignals.earnings>0.08?'獲利強勁':marketSignals.earnings<0?'獲利承壓':'穩定'}</b></span><span>籌碼面 <b>{signalLabel(marketSignals.flows,'流入','流出')}</b></span><span>消息面 <b>{signalLabel(marketSignals.news,'正面','負面')}</b></span><span>技術面 <b>{hist.length>2 && price>hist[Math.max(0,hist.length-7)]?'趨勢偏強':'趨勢偏弱'}</b></span></div>
+              <div className="research-grid"><span>基本面 <b>{signalLabel(research.fundamental,'改善','承壓')}</b></span><span>籌碼面 <b>{signalLabel(research.flow,'流入','流出')}</b></span><span>消息面 <b>{signalLabel(research.news,'偏正面','偏負面')}</b></span><span>技術面 <b>{signalLabel(research.technical,'偏強','偏弱')}</b></span></div>
             </div>
           })}
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
-          {productCatalog.bonds.map((product)=><div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-grid"><span>基本面 <b>{marketSignals.growth>0.02?'景氣穩定':'景氣轉弱'}</b></span><span>籌碼面 <b>{signalLabel(-marketSignals.riskAppetite,'避險需求↑','避險需求↓')}</b></span><span>消息面 <b>{signalLabel(marketSignals.news,'正面','負面')}</b></span><span>利率面 <b>{marketSignals.policyRate>0.035?'高利率':'中低利率'}</b></span></div></div>)}
+          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,marketSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-grid"><span>基本面 <b>{signalLabel(research.fundamental,'改善','承壓')}</b></span><span>籌碼面 <b>{signalLabel(research.flow,'需求偏強','需求偏弱')}</b></span><span>消息面 <b>{signalLabel(research.news,'偏正面','偏負面')}</b></span><span>利率面 <b>{signalLabel(research.rate,'有利','不利')}</b></span></div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
           {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
