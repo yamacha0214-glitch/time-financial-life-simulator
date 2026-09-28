@@ -483,6 +483,21 @@ export default function Page() {
     setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
   };
 
+  const sellStockPosition = (productId:string) => {
+    const lots=productHoldings.filter((h)=>h.asset==='stocks' && h.productId===productId);
+    const owned=lots.reduce((n,h)=>n+(h.shares||0),0);
+    const sharesToSell=Number(stockTradeShares['sell-position-'+productId]||0);
+    if(!Number.isInteger(sharesToSell)||sharesToSell<=0) return alert('請輸入要賣出的整數股數');
+    if(sharesToSell>owned) return alert('賣出股數不能超過目前持股');
+    const price=stockPrices[productId]||100, totalCost=lots.reduce((n,h)=>n+h.amount,0), avgCost=owned>0?totalCost/owned:0, proceeds=sharesToSell*price;
+    let remaining=sharesToSell;
+    setProductHoldings((current)=>current.flatMap((item)=>{if(item.asset!=='stocks'||item.productId!==productId||remaining<=0)return[item];const q=item.shares||0,take=Math.min(q,remaining);remaining-=take;if(take===q)return[];return[{...item,shares:q-take,amount:item.amount-avgCost*take,buyPrice:avgCost}]}));
+    const label=lots[0]?.label.split('｜')[0]||productId;
+    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,stocks:Math.max(0,current.portfolio.stocks-proceeds)},lifeStatus:`已賣出 ${label} ${sharesToSell} 股，NT$${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`,eventHistory:[...current.eventHistory,`股票賣出：${label}，實現損益 NT$${roundMoney(proceeds-avgCost*sharesToSell).toLocaleString('en-US')}。`]}));
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId,label,side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
+    setStockTradeShares((current)=>({...current,['sell-position-'+productId]:''}));
+  };
+
   const sellBond = (holdingId: string) => {
     const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'bonds');
     if (!holding) return;
@@ -503,6 +518,12 @@ export default function Page() {
 
   const bondHoldings = productHoldings.filter((holding) => holding.asset === 'bonds');
   const stockHoldings = productHoldings.filter((holding) => holding.asset === 'stocks');
+  const stockPositions = productCatalog.stocks.map((product)=>{
+    const lots=stockHoldings.filter((h)=>h.productId===product.id);
+    const shares=lots.reduce((n,h)=>n+(h.shares||0),0);
+    const cost=lots.reduce((n,h)=>n+h.amount,0);
+    return {product,lots,shares,cost,avgCost:shares>0?cost/shares:0};
+  }).filter((x)=>x.shares>0);
   const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+h.amount,0);
 
   const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
@@ -1075,7 +1096,7 @@ export default function Page() {
             const research=stockResearch(product.id,selectedSignals,hist);
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
               <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
-              <div className="market-years"><span>遊戲開始前 1 年</span><span>現在 {game.age}歲</span></div>
+              <div className="market-years"><span>{selectedMarketYear===0?'遊戲開始前 1 年':`${selectedMarket.age}歲年初`}</span><span>{selectedMarketYear===0?'24歲｜遊戲開始前':`${selectedMarket.age}歲年末`}</span></div>
               <div className="research-tabs">
                 {[
                   ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
@@ -1111,11 +1132,12 @@ export default function Page() {
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
-          <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
-          {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
-            <div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div>
-            <div><span>買入價</span><b>NT${(h.buyPrice||0).toFixed(2)}</b></div><div><span>持股單位</span><b>{(h.shares||0).toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
-            <div className="stock-sell-order"><label className="money-input-wrap"><span>賣出股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入股數" value={stockTradeShares['sell-'+h.id] || ''} onChange={(e)=>setStockTradeShares(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>預估賣出金額 NT${roundMoney(Number(stockTradeShares['sell-'+h.id]||0)*price).toLocaleString('en-US')}</small></div><button className="danger" onClick={()=>sellStock(h.id)}>賣出</button></div>})}
+          <div className="panel-header"><h2>我的持股明細</h2><span>{stockPositions.length} 檔</span></div>
+          {stockPositions.length===0?<p>目前沒有持股。</p>:stockPositions.map(pos=>{const price=stockPrices[pos.product.id]||100;const value=pos.shares*price;const pnl=value-pos.cost;return <div className="stock-statement" key={'position-'+pos.product.id}>
+            <div><strong>{pos.product.label.split('｜')[0]}</strong><small>{pos.lots.length} 筆買入紀錄 · 平均成本</small></div>
+            <div><span>平均成本</span><b>NT${pos.avgCost.toFixed(2)}</b></div><div><span>持股單位</span><b>{pos.shares.toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
+            <details className="stock-lot-details"><summary>查看買入明細</summary>{pos.lots.map(h=><div className="stock-lot-row" key={h.id}><span>{h.boughtAge}歲</span><span>{(h.shares||0).toFixed(0)} 股</span><span>NT${(h.buyPrice||0).toFixed(2)}</span></div>)}</details>
+            <div className="stock-sell-order"><label className="money-input-wrap"><span>賣出股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入股數" value={stockTradeShares['sell-position-'+pos.product.id]||''} onChange={(e)=>setStockTradeShares(c=>({...c,['sell-position-'+pos.product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>預估賣出金額 NT${roundMoney(Number(stockTradeShares['sell-position-'+pos.product.id]||0)*price).toLocaleString('en-US')}</small></div><button className="danger" onClick={()=>sellStockPosition(pos.product.id)}>賣出</button></div>})}
         </section>}
         {game.timeMachineUnlocked && !game.completed && (
           <section className="panel" style={{ marginTop: 18 }}>
