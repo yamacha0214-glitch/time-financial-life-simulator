@@ -263,6 +263,7 @@ export default function Page() {
   const [mainView, setMainView] = useState<'game' | 'market'>('game');
   const [stockPrices, setStockPrices] = useState<Record<string, number>>({ 'stock-world': 100, 'stock-tech': 100, 'stock-dividend': 100 });
   const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [100], 'stock-tech': [100], 'stock-dividend': [100] });
+  const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setIsMounted(true);
@@ -316,8 +317,11 @@ export default function Page() {
   };
 
   const buyProduct = (asset: Exclude<AssetKey, 'cash'>, productId: string) => {
-    const amount = Number(productAmounts[productId] || 0);
-    if (amount <= 0) return alert('請先輸入投入金額');
+    const requestedShares = asset === 'stocks' ? Number(stockTradeShares[productId] || 0) : 0;
+    const marketPrice = asset === 'stocks' ? (stockPrices[productId] || 100) : 0;
+    const amount = asset === 'stocks' ? requestedShares * marketPrice : Number(productAmounts[productId] || 0);
+    if (asset === 'stocks' && (!Number.isInteger(requestedShares) || requestedShares <= 0)) return alert('請輸入要買入的整數股數');
+    if (asset !== 'stocks' && amount <= 0) return alert('請先輸入投入金額');
     if (amount > game.portfolio.cash) return alert('現金不足');
     setGame((current) => {
       const nextPortfolio = { ...current.portfolio, cash: current.portfolio.cash - amount, [asset]: current.portfolio[asset] + amount };
@@ -335,18 +339,25 @@ export default function Page() {
       setProductHistory((current) => [...current, purchase]);
     }
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
+    if (asset === 'stocks') setStockTradeShares((current) => ({ ...current, [productId]: '' }));
   };
 
   const sellStock = (holdingId: string) => {
     const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'stocks');
     if (!holding) return;
+    const ownedShares = holding.shares || 0;
+    const sharesToSell = Number(stockTradeShares['sell-'+holdingId] || 0);
+    if (!Number.isInteger(sharesToSell) || sharesToSell <= 0) return alert('請輸入要賣出的整數股數');
+    if (sharesToSell > ownedShares) return alert('賣出股數不能超過目前持股');
     const price = stockPrices[holding.productId] || 100;
-    const proceeds = (holding.shares || 0) * price;
-    setProductHoldings((current) => current.filter((item) => item.id !== holdingId));
+    const proceeds = sharesToSell * price;
+    const costBasisSold = (holding.buyPrice || 0) * sharesToSell;
+    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : sharesToSell === ownedShares ? [] : [{ ...item, shares: ownedShares - sharesToSell, amount: item.amount - costBasisSold }]));
     setGame((current) => {
-      const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - holding.amount) };
+      const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - proceeds) };
       return { ...current, portfolio, lifeStatus: `已賣出 ${holding.label.split('｜')[0]}，NT${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`, eventHistory: [...current.eventHistory, `股票賣出：${holding.label.split('｜')[0]}，實現損益 NT${roundMoney(proceeds - holding.amount).toLocaleString('en-US')}。`] };
     });
+    setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
   };
 
   const stockHoldings = productHoldings.filter((holding) => holding.asset === 'stocks');
@@ -846,7 +857,11 @@ export default function Page() {
                       <div className="shop-product-card" key={product.id}>
                         <strong>{product.label}</strong>
                         <div className="shop-buy-row">
-                          <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
+                          {asset === 'stocks' ? <div className="stock-order-box">
+                            <div className="stock-live-price">目前每股 <b>NT${(stockPrices[product.id] || 100).toFixed(2)}</b></div>
+                            <label className="money-input-wrap"><span>股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入股數" value={stockTradeShares[product.id] || ''} onChange={(event) => setStockTradeShares((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
+                            <small>預估成交金額：NT${roundMoney(Number(stockTradeShares[product.id] || 0) * (stockPrices[product.id] || 100)).toLocaleString('en-US')}</small>
+                          </div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
                           <button onClick={() => buyProduct(asset, product.id)}>購買</button>
                         </div>
                       </div>
@@ -930,7 +945,7 @@ export default function Page() {
           {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
             <div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div>
             <div><span>買入價</span><b>NT${(h.buyPrice||0).toFixed(2)}</b></div><div><span>持股單位</span><b>{(h.shares||0).toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
-            <button className="danger" onClick={()=>sellStock(h.id)}>全部賣出</button></div>})}
+            <div className="stock-sell-order"><label className="money-input-wrap"><span>賣出股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入股數" value={stockTradeShares['sell-'+h.id] || ''} onChange={(e)=>setStockTradeShares(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>預估賣出金額 NT${roundMoney(Number(stockTradeShares['sell-'+h.id]||0)*price).toLocaleString('en-US')}</small></div><button className="danger" onClick={()=>sellStock(h.id)}>賣出</button></div>})}
         </section>}
         {game.pendingChoice && (
           <div className="modal-overlay">
