@@ -345,7 +345,11 @@ export default function Page() {
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
   const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
   const [openResearch, setOpenResearch] = useState<string | null>(null);
-  const toggleResearch = (key:string) => setOpenResearch((current)=>current===key?null:key);
+  const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
+  const toggleResearch = (key:string, title?:string, body?:React.ReactNode) => {
+    if (researchOverlay?.key===key) return setResearchOverlay(null);
+    if (title && body) setResearchOverlay({key,title,body});
+  };
 
   useEffect(() => {
     setIsMounted(true);
@@ -1040,12 +1044,8 @@ export default function Page() {
                   ['flow','籌碼面',signalLabel(research.flow,'流入','流出')],
                   ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
                   ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
-                ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={openResearch===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
+                ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
-              {openResearch===product.id+'-fundamental' && <div className="research-detail"><strong>基本面詳細資訊</strong><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>觀察企業創造現金流與獲利能力，以及利率對估值的壓力。這些因素會影響長期報酬，但不直接決定短期價格。</p></div>}
-              {openResearch===product.id+'-flow' && <div className="research-detail"><strong>籌碼面詳細資訊</strong><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · 市場風險偏好 {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>模擬法人、基金與市場資金流向。資金流入可能推升需求，但也可能發生在價格已經偏高的階段。</p></div>}
-              {openResearch===product.id+'-news' && <div className="research-detail"><strong>消息面詳細資訊</strong><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>綜合政策、產業與企業消息。市場可能提前反映消息，因此好消息不保證公布後繼續上漲。</p></div>}
-              {openResearch===product.id+'-technical' && <div className="research-detail"><strong>技術面詳細資訊</strong><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>根據近期價格方向與市場雜訊形成趨勢訊號，只描述市場行為，不代表未來必然延續。</p></div>}
             </div>
           })}
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
@@ -1055,12 +1055,8 @@ export default function Page() {
                 ['flow','籌碼面',signalLabel(research.flow,'需求偏強','需求偏弱')],
                 ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
-              ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={openResearch===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
-            </div>
-            {openResearch===product.id+'-fundamental' && <div className="research-detail"><strong>基本面詳細資訊</strong><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>政府債較重視通膨與償債環境；公司債另外受到企業信用與景氣循環影響。</p></div>}
-            {openResearch===product.id+'-flow' && <div className="research-detail"><strong>籌碼面詳細資訊</strong><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>市場 Risk-off 時資金可能流向高品質債券，但公司債仍可能因信用風險承壓。</p></div>}
-            {openResearch===product.id+'-news' && <div className="research-detail"><strong>消息面詳細資訊</strong><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>涵蓋央行政策、信用評級、通膨與總體消息；市場可能在消息公布前就先行定價。</p></div>}
-            {openResearch===product.id+'-rate' && <div className="research-detail"><strong>利率面詳細資訊</strong><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>殖利率上升通常壓低既有債券價格；期限越長，Duration 帶來的價格敏感度通常越高。</p></div>}</div>})}
+              ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
+            </div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
           {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
