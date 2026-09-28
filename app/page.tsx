@@ -257,8 +257,8 @@ export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
   const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
-  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number }>>([]);
-  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number }>>([]);
+  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number }>>([]);
+  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
 
   useEffect(() => {
@@ -323,7 +323,8 @@ export default function Page() {
     });
     const product = productCatalog[asset].find((item) => item.id === productId);
     if (product) {
-      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age };
+      const premiumTerm = productId === 'policy-5' ? 5 : productId === 'policy-10' ? 10 : undefined;
+      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined };
       setProductHoldings((current) => [...current, purchase]);
       setProductHistory((current) => [...current, purchase]);
     }
@@ -366,6 +367,27 @@ export default function Page() {
 
   const advanceYear = () => {
     if (game.pendingChoice || game.completed) return;
+
+    // Participating policies are recurring premium contracts.
+    // The first entered amount becomes the fixed annual premium for the full premium term.
+    const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
+    if (activePolicies.length) {
+      const due = activePolicies.reduce((sum, holding) => sum + holding.amount, 0);
+      if (game.portfolio.cash < due) {
+        alert(`保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 即將到期，但目前現金不足。請先保留足夠現金；保費屬於既有契約的強制年度支出。`);
+        return;
+      }
+      setProductHoldings((current) => current.map((holding) => {
+        if (holding.asset !== 'insurance' || !holding.premiumTerm || (holding.premiumsPaid || 1) >= holding.premiumTerm) return holding;
+        return { ...holding, premiumsPaid: (holding.premiumsPaid || 1) + 1 };
+      }));
+      setGame((current) => ({
+        ...current,
+        portfolio: { ...current.portfolio, cash: current.portfolio.cash - due, insurance: current.portfolio.insurance + due },
+        eventHistory: [...current.eventHistory, `保單續期：本年度自動繳交保費 NT${roundMoney(due).toLocaleString('en-US')}。`],
+        lifeStatus: `既有保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 已自動從現金扣除。`,
+      }));
+    }
 
     // Mature fixed deposits before the new year's market/life simulation.
     // Principal + contractual interest returns to cash, and the holding disappears.
@@ -777,7 +799,7 @@ export default function Page() {
                     {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
                       <div className="shop-label">目前持有倉位</div>
                       {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
-                        <div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.boughtAge} 歲購入 · 本金鎖定</small></div>
+                        <div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.asset === 'insurance' && holding.premiumTerm ? `年繳 NT${roundMoney(holding.amount).toLocaleString('en-US')} · 已繳 ${holding.premiumsPaid || 1}/${holding.premiumTerm} 年 · 尚餘 ${Math.max(0, holding.premiumTerm - (holding.premiumsPaid || 1))} 年` : `${holding.boughtAge} 歲購入 · 本金鎖定`}</small></div>
                         <div><b>NT${roundMoney(holding.amount).toLocaleString('en-US')}</b><small>{totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small></div>
                       </div>)}
                     </div>}
