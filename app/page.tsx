@@ -24,7 +24,7 @@ type LifeEvent = {
   choiceLabel?: string;
   choices?: Array<{
     label: string;
-    action: 'cash' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay';
+    action: 'cash' | 'deposit' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay';
     note: string;
   }>;
 };
@@ -44,7 +44,7 @@ type PendingChoice = {
   amount: number;
   choices: Array<{
     label: string;
-    action: 'cash' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay';
+    action: 'cash' | 'deposit' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay';
     note: string;
   }>;
 };
@@ -467,7 +467,7 @@ export default function Page() {
     });
   };
 
-  const resolveChoice = (action: 'cash' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay') => {
+  const resolveChoice = (action: 'cash' | 'deposit' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay') => {
     setGame((current) => {
       if (!current.pendingChoice || !current.lastLifeEvent) return current;
 
@@ -486,6 +486,16 @@ export default function Page() {
           increasedForcedSell += 1;
           increasedCrisis += 1;
           status = `${current.lastLifeEvent.title}：現金不足，你被迫賣出資產。`;
+        }
+      } else if (action === 'deposit') {
+        if (nextPortfolio.deposit >= eventAmount) {
+          nextPortfolio.deposit -= eventAmount;
+        } else {
+          const shortfall = eventAmount - nextPortfolio.deposit;
+          nextPortfolio.deposit = 0;
+          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'deposit');
+          increasedForcedSell += 1;
+          status = `${current.lastLifeEvent.title}：定存不足，你必須動用其他資產。`;
         }
       } else if (action === 'stocks') {
         if (nextPortfolio.stocks >= eventAmount) {
