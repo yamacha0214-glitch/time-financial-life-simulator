@@ -666,6 +666,7 @@ export default function Page() {
               <span className={allocationValid ? '' : 'allocation-warning'}>{allocationValid ? '配置完成 ✓' : `尚差 NT${roundMoney(Math.abs(allocationDifference)).toLocaleString('en-US')} ${allocationDifference > 0 ? '未配置' : '超額配置'}`}</span>
             </div>
             {allocationList.map(({ asset, percentage, amount }) => (
+              asset === 'cash' ?
               <div key={asset} className="allocation-row">
                 <div className="asset-title-wrap">
                   <div className="asset-name">{ASSET_META[asset].label}</div>
@@ -678,8 +679,9 @@ export default function Page() {
                     <input
                       inputMode="numeric"
                       pattern="[0-9]*"
-                      value={roundMoney(amount)}
-                      onChange={(event) => updateAllocationAmount(asset, event.target.value)}
+                      value={asset === 'cash' ? roundMoney(amount) : roundMoney(game.portfolio[asset])}
+                      readOnly={asset !== 'cash'}
+                      onChange={(event) => asset === 'cash' && updateAllocationAmount(asset, event.target.value)}
                       aria-label={`${ASSET_META[asset].label}配置金額`}
                     />
                   </label>
@@ -689,6 +691,17 @@ export default function Page() {
                   </div>
                 </div>
               </div>
+              : <details key={asset} className="product-drawer">
+                  <summary><strong>{ASSET_META[asset].label}</strong><span>展開查看商品與持有部位</span></summary>
+                  <div className="product-options">
+                    {asset === 'deposit' && <><button>一年期定存｜2.0%｜1 年到期</button><button>三年期定存｜2.4%｜3 年到期</button></>}
+                    {asset === 'bonds' && <><button>5 年期政府債券 A｜年息 2.8%｜每年付息</button><button>10 年期政府債券 B｜年息 3.2%｜每年付息</button><button>7 年期投資級公司債 C｜年息 4.1%｜每年付息</button></>}
+                    {asset === 'stocks' && <><button>全球股票 ETF｜股息率約 2.0%</button><button>科技成長 ETF｜股息率約 0.8%</button><button>高股息 ETF｜股息率約 4.0%</button></>}
+                    {asset === 'realEstate' && <><button>都會小宅｜總價 800 萬｜頭期 20%</button><button>郊區家庭宅｜總價 1,200 萬｜頭期 20%</button></>}
+                    {asset === 'insurance' && <><button>5 年繳長期分紅保單｜早期流動性低</button><button>10 年繳長期分紅保單｜長期累積</button></>}
+                    <p>商品買入後會形成獨立持倉；投入本金不可在此直接修改。下一階段將把購買、到期、Coupon／股息／租金現金流接入年度引擎。</p>
+                  </div>
+                </details>
             ))}
 
             <div className="cta-row">
