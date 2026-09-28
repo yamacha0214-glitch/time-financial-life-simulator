@@ -21,7 +21,16 @@ const insuranceCurveRatio=(policyYear:number)=>{
   const ui=INSURANCE_SURRENDER_CURVE.indexOf(upper), lower=INSURANCE_SURRENDER_CURVE[Math.max(0,ui-1)];
   const t=(y-lower[0])/(upper[0]-lower[0]); return lower[1]+(upper[1]-lower[1])*t;
 };
-const insuranceFulfillment=(signals:MarketSignals)=>clamp(1+(signals.growth-0.025)*1.5-(signals.creditSpread-0.018)*1.8+signals.news*0.035,0.78,1.12);
+// TIME modelling assumption: keep fulfilment in a relatively narrow 90%-105% band.
+// GL16 defines/discloses fulfilment ratios; GL34 requires fair/sustainable bonus governance and smoothing.
+// Neither guideline itself prescribes this numeric band.
+const insuranceFulfillment=(signals:MarketSignals)=>clamp(1+(signals.growth-0.025)*0.65-(signals.creditSpread-0.018)*0.8+signals.news*0.018,0.90,1.05);
+const policyIrr=(annualPremium:number,paid:number,value:number)=>{
+  if(paid<=0||value<=0)return null;
+  let lo=-0.99,hi=0.30;
+  for(let n=0;n<70;n++){const r=(lo+hi)/2;let npv=0;for(let y=0;y<paid;y++)npv-=annualPremium/Math.pow(1+r,y);npv+=value/Math.pow(1+r,Math.max(1,paid));if(npv>0)lo=r;else hi=r;}
+  return (lo+hi)/2;
+};
 const insuranceSurrenderValue=(annualPremium:number,premiumTerm:number,policyYear:number,signals:MarketSignals)=>{
   const scheduledPremium=annualPremium*premiumTerm;
   const base=scheduledPremium*insuranceCurveRatio(policyYear);
@@ -385,6 +394,7 @@ export default function Page() {
   const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
+  const [insuranceWithdrawals, setInsuranceWithdrawals] = useState<Record<string,string>>({});
   const [mainView, setMainView] = useState<'game' | 'market'>('game');
   const [initialMarket] = useState(buildPreGameMarket);
   const [stockPrices, setStockPrices] = useState<Record<string, number>>(initialMarket.stockPrices);
@@ -564,6 +574,22 @@ export default function Page() {
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
     if (asset === 'stocks') setStockTradeShares((current) => ({ ...current, [productId]: '' }));
     if (asset === 'bonds') setBondTradeUnits((current) => ({ ...current, [productId]: '' }));
+  };
+
+  const withdrawInsurance = (holdingId:string) => {
+    const holding=productHoldings.find((h)=>h.id===holdingId&&h.asset==='insurance');
+    if(!holding?.premiumTerm)return;
+    const requested=Number(insuranceWithdrawals[holdingId]||0);
+    if(requested<=0)return alert('請輸入提取金額');
+    const policyYear=Math.max(1,game.age-holding.boughtAge+1);
+    const currentValue=insuranceSurrenderValue(holding.amount,holding.premiumTerm,policyYear,marketSignals);
+    if(requested>currentValue)return alert('提取金額不能高於目前退保價值');
+    // Withdrawal reduces the policy's future economic base proportionally. This is a TIME simplification
+    // calibrated to the supplied withdrawal illustrations, not a contractual rule of any named product.
+    const remainingRatio=Math.max(0,(currentValue-requested)/Math.max(1,currentValue));
+    setProductHoldings((current)=>current.flatMap((h)=>h.id!==holdingId?[h]:remainingRatio<=0?[]:[{...h,amount:h.amount*remainingRatio}]));
+    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+requested,insurance:Math.max(0,current.portfolio.insurance-requested)},eventHistory:[...current.eventHistory,`保單提取：從 ${holding.label.split('｜')[0]} 提取 NT${roundMoney(requested).toLocaleString('en-US')}，已回到現金；後續保單價值基礎同步降低。`],lifeStatus:'已從分紅保單提取現金，後續非保證利益與退保價值將受影響。'}));
+    setInsuranceWithdrawals((x)=>({...x,[holdingId]:''}));
   };
 
   const sellStock = (holdingId: string) => {
@@ -1135,8 +1161,12 @@ export default function Page() {
                     {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
                       <div className="shop-label">目前持有倉位</div>
                       {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
-                        <div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.asset === 'insurance' && holding.premiumTerm ? `年繳 NT${roundMoney(holding.amount).toLocaleString('en-US')} · 已繳 ${holding.premiumsPaid || 1}/${holding.premiumTerm} 年 · 尚餘 ${Math.max(0, holding.premiumTerm - (holding.premiumsPaid || 1))} 年` : `${holding.boughtAge} 歲購入 · 本金鎖定`}</small></div>
-                        <div><b>NT${roundMoney(holding.amount).toLocaleString('en-US')}</b><small>{totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small></div>
+                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceSurrenderValue(holding.amount,holding.premiumTerm,py,marketSignals),paid=holding.premiumsPaid||1,irr=policyIrr(holding.amount,paid,sv),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
+                          <div className="insurance-policy-head"><div><strong>{holding.label.split('｜')[0]}</strong><small>保單年度 第 {py} 年 · 供款 {paid}/{holding.premiumTerm} 年</small></div><b>退保價值 NT${roundMoney(sv).toLocaleString('en-US')}</b></div>
+                          <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(holding.amount*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
+                          <div className="insurance-withdraw"><label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入提取金額" value={insuranceWithdrawals[holding.id]||''} onChange={(e)=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><button onClick={()=>withdrawInsurance(holding.id)}>提取</button></div>
+                          <small>提取會降低後續保單價值；模擬達成率只作用於非保證利益。</small>
+                        </div>})() : <><div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.boughtAge} 歲購入 · 本金鎖定</small></div><div><b>NT${roundMoney(holding.amount).toLocaleString('en-US')}</b><small>{totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small></div></>}
                       </div>)}
                     </div>}
                     <div className="shop-label">可購買商品</div>
