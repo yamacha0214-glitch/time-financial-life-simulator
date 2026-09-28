@@ -217,8 +217,8 @@ const buildInitialState = (): GameState => ({
   year: 1,
   portfolio: { ...BASE_PORTFOLIO },
   allocations: { ...START_ALLOCATIONS },
-  income: getAnnualIncome(25),
-  expense: getAnnualExpense(25),
+  income: 0,
+  expense: 0,
   lifeStatus: '你已經開始人生資產旅程。',
   inflationRate: 0.025,
   cumulativeInflation: 0.025,
@@ -534,9 +534,8 @@ export default function Page() {
 
       const inflationRate = clamp(0.018 + Math.random() * 0.06, 0.01, 0.08);
       const marketEvent = randomFrom(MARKET_EVENTS);
-      const lifeEvent = randomFrom(LIFE_EVENTS);
-      const annualIncome = getAnnualIncome(current.age + 1);
-      const annualExpense = getAnnualExpense(current.age + 1);
+      // V2 focus: market conditions and asset allocation only.
+      // No salary, living expense, or random life-event cash-flow system.
 
       const baseReturns: Record<AssetKey, number> = {
         cash: 0.014 + inflationRate * 0.2,
@@ -554,65 +553,11 @@ export default function Page() {
       });
 
       let nextPortfolio = { ...assetsAfterMarket };
-      let nextIncome = annualIncome;
-      let nextExpense = annualExpense;
-      let nextLifeStatus = `${current.lifeStatus}`;
-      let nextEventHistory = [...current.eventHistory, `${marketEvent.title}: ${marketEvent.blurb}`];
-      let nextAnalysis = current.analysis;
-
-      // Salary and ordinary living costs matter every year, not only event years.
-      nextPortfolio.cash += Math.max(nextIncome - nextExpense, 0);
-      if (nextExpense > nextIncome) {
-        nextPortfolio = applyForcedSale(nextPortfolio, nextExpense - nextIncome, 'cash');
-      }
-
-      const eventCost = lifeEvent.expense ?? 0;
-
-      if (lifeEvent.expense && !lifeEvent.requiredChoice) {
-        const canCover = getLiquidity(nextPortfolio) >= eventCost;
-        if (canCover) {
-          const fromCash = Math.min(nextPortfolio.cash, eventCost);
-          nextPortfolio.cash -= fromCash;
-          const shortfall = eventCost - fromCash;
-          if (shortfall > 0) {
-            nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'cash');
-          }
-          nextLifeStatus = `${lifeEvent.title}：支出 NT${roundMoney(eventCost).toLocaleString('en-US')}。`;
-          nextAnalysis = `${lifeEvent.title}讓你更直覺理解現金流與人生事件的優先順序。`;
-        } else {
-          nextPortfolio = applyForcedSale(nextPortfolio, eventCost, 'cash');
-          nextLifeStatus = `${lifeEvent.title}：你的生活計畫被迫壓縮，流動性問題被立即放大。`;
-          nextAnalysis = '你在沒有足夠現金時被迫變賣資產，這正是 Liquidity Risk 的直接體驗。';
-          nextEventHistory.push('流動性危機：你不得不變賣資產以支付人生開支。');
-        }
-      }
-
-      if (lifeEvent.expense && lifeEvent.requiredChoice) {
-        const pendingChoice: PendingChoice = {
-          title: lifeEvent.title,
-          description: lifeEvent.description,
-          amount: eventCost,
-          choices: lifeEvent.choices || [],
-        };
-
-        return {
-          ...current,
-          age: current.age + 1,
-          year: current.year + 1,
-          income: nextIncome,
-          expense: nextExpense,
-          lifeStatus: `${lifeEvent.title}：需要你做出資產處置選擇。`,
-          inflationRate,
-          cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
-          marketEvent,
-          lastLifeEvent: lifeEvent,
-          pendingChoice,
-          portfolio: nextPortfolio,
-          eventHistory: nextEventHistory,
-          analysis: nextAnalysis,
-          timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
-        };
-      }
+      const nextIncome = 0;
+      const nextExpense = 0;
+      const nextLifeStatus = `${marketEvent.title}：${marketEvent.blurb}`;
+      const nextEventHistory = [...current.eventHistory, `${marketEvent.title}: ${marketEvent.blurb}`];
+      const nextAnalysis = '本年度只反映市場環境與既有金融商品的現金流，不額外加入薪資、生活支出或人生事件。';
 
       const finalTotal = sumPortfolio(nextPortfolio);
       const nextAge = current.age + 1;
@@ -636,15 +581,15 @@ export default function Page() {
         age: nextAge,
         year: current.year + 1,
         portfolio: nextPortfolio,
-        income: nextIncome,
-        expense: nextExpense,
+        income: 0,
+        expense: 0,
         lifeStatus: nextLifeStatus,
         inflationRate,
         cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
         eventHistory: nextEventHistory,
         history: newHistory,
         marketEvent,
-        lastLifeEvent: lifeEvent,
+        lastLifeEvent: null,
         pendingChoice: null,
         timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
         marketCrisisCount: marketEvent.type === 'crisis' ? current.marketCrisisCount + 1 : current.marketCrisisCount,
@@ -846,14 +791,6 @@ export default function Page() {
             <span>累積通膨</span>
             <strong>{(game.cumulativeInflation * 100).toFixed(1)}%</strong>
           </div>
-          <div className="stat-card">
-            <span>今年收入</span>
-            <strong>NT${roundMoney(game.income).toLocaleString('en-US')}</strong>
-          </div>
-          <div className="stat-card">
-            <span>今年支出</span>
-            <strong>NT${roundMoney(game.expense).toLocaleString('en-US')}</strong>
-          </div>
           <div className="stat-card status">
             <span>人生狀態</span>
             <strong>{game.lifeStatus}</strong>
@@ -1018,25 +955,6 @@ export default function Page() {
             <div><span>買入價</span><b>NT${(h.buyPrice||0).toFixed(2)}</b></div><div><span>持股單位</span><b>{(h.shares||0).toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
             <div className="stock-sell-order"><label className="money-input-wrap"><span>賣出股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入股數" value={stockTradeShares['sell-'+h.id] || ''} onChange={(e)=>setStockTradeShares(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>預估賣出金額 NT${roundMoney(Number(stockTradeShares['sell-'+h.id]||0)*price).toLocaleString('en-US')}</small></div><button className="danger" onClick={()=>sellStock(h.id)}>賣出</button></div>})}
         </section>}
-        {game.pendingChoice && (
-          <div className="modal-overlay">
-            <div className="modal-card">
-              <div className="eyebrow">重大人生事件</div>
-              <h2>{game.pendingChoice.title}</h2>
-              <p>{game.pendingChoice.description}</p>
-              <div className="modal-amount">需要：NT${roundMoney(game.pendingChoice.amount).toLocaleString('en-US')}</div>
-              <div className="choice-list">
-                {game.pendingChoice.choices.map((choice) => (
-                  <button key={choice.label} onClick={() => resolveChoice(choice.action)}>
-                    <span>{choice.label}</span>
-                    <small>{choice.note}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
         {game.timeMachineUnlocked && !game.completed && (
           <section className="panel" style={{ marginTop: 18 }}>
             <div className="eyebrow">TIME MACHINE UNLOCKED</div>
