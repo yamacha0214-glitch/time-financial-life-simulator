@@ -861,7 +861,7 @@ export default function Page() {
           </div>
         </header>
 
-        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>遊戲主畫面</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>股票市場</button></nav>
+        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>遊戲主畫面</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
         {mainView === 'game' ? <>
         <section className="stats-row">
           <div className="stat-card">
@@ -1029,7 +1029,7 @@ export default function Page() {
         </section>
 
         </> : <section className="panel stock-market-page">
-          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>股票市場價格與持股明細</h2></div><span>AGE {game.age}</span></div>
+          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>AGE {game.age}</span></div>
           <div className="signal-dashboard">
             <div><span>總體景氣</span><b>{marketSignals.growth>0.025?'擴張':marketSignals.growth<0.008?'疲弱':'溫和'}</b><small>成長 {(marketSignals.growth*100).toFixed(1)}%</small></div>
             <div><span>通膨 / 利率</span><b>{(marketSignals.inflation*100).toFixed(1)}% / {(marketSignals.policyRate*100).toFixed(1)}%</b><small>影響估值與債券 Duration</small></div>
@@ -1054,10 +1054,10 @@ export default function Page() {
                   ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
                 ].map(([key,label,status])=><button key={key} onClick={()=>{
                   const bodies:Record<string,React.ReactNode>={
-                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>你可以把基本面想成「這家公司本身過得好不好」。會看它有沒有賺錢、景氣好不好，以及借錢成本高不高。公司很會賺錢通常是好事，但股價短期不一定馬上上漲。</p></>,
-                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>籌碼面是在看「現在大家的錢往哪裡跑」。大型基金和投資人一直買，通常會增加買盤；一直賣則可能形成壓力。但很多人買，不代表它一定便宜。</p></>,
-                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>消息面是在看「最近發生了什麼事」。例如新產品、政府政策、戰爭或利率消息，都可能讓大家改變想法。但市場常常會提前猜到消息，所以看到好消息時，價格不一定還會繼續漲。</p></>,
-                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>技術面是在看「價格最近怎麼走」。如果最近一直漲，代表目前走勢比較強；一直跌則比較弱。但它比較像看車子現在往哪個方向開，不代表它等等不會轉彎。</p></>
+                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>目前企業獲利偏弱，景氣接近持平，利率仍在相對高位。整體基本面偏中性至保守，短期缺乏明顯推升估值的力量。</p></>,
+                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>目前大型資金動能偏弱，市場風險偏好有限。買盤力道不足，短期資金面對價格的支撐較弱。</p></>,
+                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>近期政策、產業與企業消息整體偏正面，但部分利多可能已提前反映在價格中。消息環境有利，仍需觀察市場後續反應。</p></>,
+                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>近期價格動能偏強，走勢維持向上。短期趨勢仍有支撐，但過去的上漲不代表下一期一定延續。</p></>
                   }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
                 }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
@@ -1072,10 +1072,10 @@ export default function Page() {
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
               ].map(([key,label,status])=><button key={key} onClick={()=>{
                 const bodies:Record<string,React.ReactNode>={
-                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>債券的基本面是在看「借錢給它安不安全」。政府債主要看通膨、利率和政府償債能力；公司債還要看公司有沒有能力按時付利息、還本金。</p></>,
-                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>籌碼面是在看「市場的錢正在往哪裡移動」。大家害怕風險時，資金常跑去比較安全的政府債；但公司債還是可能因為大家擔心公司還不起錢而被賣掉。</p></>,
-                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>消息面是在看「最近有沒有事情改變大家對這張債券的看法」。例如央行升息、公司被降評級或通膨突然變高，都可能影響債券價格。</p></>,
-                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>利率面可以先記一個簡單規則：市場利率上升時，舊債券通常會變得比較不值錢；利率下降時則相反。而且通常剩越久才到期的債券，價格受到利率影響越大。</p></>
+                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
+                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>目前避險資金需求有限，債券買盤沒有明顯增強。若市場風險升高，高品質政府債可能獲得較多資金支持。</p></>,
+                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>近期央行、通膨與信用消息整體影響有限。若出現升息、降評級或通膨升溫，債券價格可能面臨較大壓力。</p></>,
+                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>目前利率水準對既有債券價格形成一定壓力。若利率繼續上升，長天期債券通常會比短天期債券承受更大的價格波動。</p></>
                 }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
