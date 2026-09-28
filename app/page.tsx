@@ -355,6 +355,30 @@ export default function Page() {
   const advanceYear = () => {
     if (game.pendingChoice || game.completed) return;
 
+    // Mature fixed deposits before the new year's market/life simulation.
+    // Principal + contractual interest returns to cash, and the holding disappears.
+    const maturingDeposits = productHoldings.filter((holding) => {
+      if (holding.asset !== 'deposit') return false;
+      const term = holding.productId === 'deposit-1' ? 1 : holding.productId === 'deposit-3' ? 3 : 0;
+      return term > 0 && game.age + 1 >= holding.boughtAge + term;
+    });
+    if (maturingDeposits.length) {
+      const proceeds = maturingDeposits.reduce((sum, holding) => {
+        const term = holding.productId === 'deposit-1' ? 1 : 3;
+        const rate = holding.productId === 'deposit-1' ? 0.02 : 0.024;
+        return sum + holding.amount * (1 + rate * term);
+      }, 0);
+      const principal = maturingDeposits.reduce((sum, holding) => sum + holding.amount, 0);
+      setProductHoldings((current) => current.filter((holding) => !maturingDeposits.some((matured) => matured.id === holding.id)));
+      setGame((current) => {
+        const portfolio = { ...current.portfolio, deposit: Math.max(0, current.portfolio.deposit - principal), cash: current.portfolio.cash + proceeds };
+        const total = sumPortfolio(portfolio);
+        const allocations = { ...current.allocations };
+        ASSET_KEYS.forEach((key) => { allocations[key] = total > 0 ? (portfolio[key] / total) * 100 : 0; });
+        return { ...current, portfolio, allocations, eventHistory: [...current.eventHistory, `定存到期：本金與利息 NT${roundMoney(proceeds).toLocaleString('en-US')} 已回到現金。`] };
+      });
+    }
+
     setGame((current) => {
       const totalBefore = sumPortfolio(current.portfolio);
       const rebalanced = getAssetValueByAllocation(totalBefore, current.allocations);
