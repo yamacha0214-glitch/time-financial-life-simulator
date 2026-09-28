@@ -1045,6 +1045,11 @@ export default function Page() {
             <span>累積通膨</span>
             <strong>{(game.cumulativeInflation * 100).toFixed(1)}%</strong>
           </div>
+          <div className="stat-card">
+            <span>年度新增資金</span>
+            <strong>NT$300,000</strong>
+            <small>每年前進一年後，自動加入現金</small>
+          </div>
         </section>
 
         <section className="layout">
