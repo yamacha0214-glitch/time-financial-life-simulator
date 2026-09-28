@@ -370,12 +370,13 @@ export default function Page() {
         const parsed = JSON.parse(savedProducts);
         if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
+        const hasSavedReports = Array.isArray(parsed.annualReports) && parsed.annualReports.length > 0;
+        if (hasSavedReports) setAnnualReports(parsed.annualReports);
         if (parsed.marketModelVersion === MARKET_MODEL_VERSION) {
           if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
           if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
           if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
           if (parsed.marketSignals) setMarketSignals(parsed.marketSignals);
-          if (Array.isArray(parsed.annualReports)) setAnnualReports(parsed.annualReports);
         } else {
           // Migrate old preview saves that used the obsolete all-100 market model.
           const migratedMarket = buildPreGameMarket();
@@ -383,7 +384,7 @@ export default function Page() {
           setStockPriceHistory(migratedMarket.stockPriceHistory);
           setBondPrices(migratedMarket.bondPrices);
           setMarketSignals(migratedMarket.signals);
-          setAnnualReports([migratedMarket.preGameReport]);
+          if (!hasSavedReports) setAnnualReports([migratedMarket.preGameReport]);
         }
       }
     } catch {}
@@ -995,19 +996,32 @@ export default function Page() {
               {annualReports.length===0 ? <p>第一個年度結束後，這裡會整理當年的經濟、利率、企業獲利、資金與市場消息。</p> :
                 <>
                   <p>{annualReports[annualReports.length-1].summary}</p>
-                  <div className="annual-report-scroll">
-                  <div className="annual-report-list">
-                    {[...annualReports].reverse().map((report)=><div key={report.year} className="annual-report-item">
-                      <button onClick={()=>setReportOpen(reportOpen===report.year?null:report.year)}>
-                        <strong>{report.year===0?'遊戲開始前一年｜金融年報':`第 ${report.year} 年金融年報`}</strong><span>{report.year===0?'市場背景':`${report.age}歲`} {reportOpen===report.year?'收起':'查看 →'}</span>
-                      </button>
-                      {reportOpen===report.year && <div className="annual-report-detail">
-                        {report.events.map((event)=><p key={event.label}><b>{event.label}</b><span>{event.text}</span></p>)}
-                        <div className="annual-report-summary"><b>年度摘要</b><span>{report.summary}</span></div>
-                      </div>}
-                    </div>)}
+                  <div className="annual-report-picker">
+                    <label htmlFor="annual-report-year">查看金融年報</label>
+                    <select
+                      id="annual-report-year"
+                      value={reportOpen ?? annualReports[annualReports.length-1].year}
+                      onChange={(e)=>setReportOpen(Number(e.target.value))}
+                    >
+                      {[...annualReports].reverse().map((report)=>
+                        <option key={report.year} value={report.year}>
+                          {report.year===0?'遊戲開始前一年｜市場背景':`第 ${report.year} 年｜${report.age}歲`}
+                        </option>
+                      )}
+                    </select>
                   </div>
-                  </div>
+                  {(()=>{
+                    const selectedYear = reportOpen ?? annualReports[annualReports.length-1].year;
+                    const report = annualReports.find((item)=>item.year===selectedYear) ?? annualReports[annualReports.length-1];
+                    return <div className="annual-report-detail annual-report-selected">
+                      <div className="annual-report-selected-title">
+                        <strong>{report.year===0?'遊戲開始前一年｜金融年報':`第 ${report.year} 年金融年報`}</strong>
+                        <span>{report.year===0?'市場背景':`${report.age}歲`}</span>
+                      </div>
+                      {report.events.map((event)=><p key={event.label}><b>{event.label}</b><span>{event.text}</span></p>)}
+                      <div className="annual-report-summary"><b>年度摘要</b><span>{report.summary}</span></div>
+                    </div>;
+                  })()}
                 </>}
             </div>
 
