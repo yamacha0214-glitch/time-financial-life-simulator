@@ -257,13 +257,15 @@ export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
   const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
-  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number }>>([]);
-  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number }>>([]);
+  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
+  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
   const [mainView, setMainView] = useState<'game' | 'market'>('game');
-  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ 'stock-world': 100, 'stock-tech': 100, 'stock-dividend': 100 });
-  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [100], 'stock-tech': [100], 'stock-dividend': [100] });
+  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 });
+  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
   const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
+  const [bondPrices, setBondPrices] = useState<Record<string, number>>({ 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 });
+  const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
 
   useEffect(() => {
     setIsMounted(true);
@@ -279,6 +281,7 @@ export default function Page() {
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
         if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
         if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
+        if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
       }
     } catch {}
   }, []);
@@ -290,8 +293,8 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory }));
-  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, isMounted]);
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -318,10 +321,14 @@ export default function Page() {
 
   const buyProduct = (asset: Exclude<AssetKey, 'cash'>, productId: string) => {
     const requestedShares = asset === 'stocks' ? Number(stockTradeShares[productId] || 0) : 0;
+    const requestedBondUnits = asset === 'bonds' ? Number(bondTradeUnits[productId] || 0) : 0;
     const marketPrice = asset === 'stocks' ? (stockPrices[productId] || 100) : 0;
-    const amount = asset === 'stocks' ? requestedShares * marketPrice : Number(productAmounts[productId] || 0);
+    const bondQuote = asset === 'bonds' ? (bondPrices[productId] || 100) : 0;
+    const bondFaceValue = 10000;
+    const amount = asset === 'stocks' ? requestedShares * marketPrice : asset === 'bonds' ? requestedBondUnits * bondFaceValue * bondQuote / 100 : Number(productAmounts[productId] || 0);
     if (asset === 'stocks' && (!Number.isInteger(requestedShares) || requestedShares <= 0)) return alert('請輸入要買入的整數股數');
-    if (asset !== 'stocks' && amount <= 0) return alert('請先輸入投入金額');
+    if (asset === 'bonds' && (!Number.isInteger(requestedBondUnits) || requestedBondUnits <= 0)) return alert('請輸入要買入的債券張數');
+    if (asset !== 'stocks' && asset !== 'bonds' && amount <= 0) return alert('請先輸入投入金額');
     if (amount > game.portfolio.cash) return alert('現金不足');
     setGame((current) => {
       const nextPortfolio = { ...current.portfolio, cash: current.portfolio.cash - amount, [asset]: current.portfolio[asset] + amount };
@@ -333,13 +340,16 @@ export default function Page() {
     const product = productCatalog[asset].find((item) => item.id === productId);
     if (product) {
       const premiumTerm = productId === 'policy-5' ? 5 : productId === 'policy-10' ? 10 : undefined;
-      const price = asset === 'stocks' ? (stockPrices[productId] || 100) : undefined;
-      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: price ? amount / price : undefined };
+      const price = asset === 'stocks' ? (stockPrices[productId] || 100) : asset === 'bonds' ? (bondPrices[productId] || 100) : undefined;
+      const maturityYears = productId === 'bond-5' ? 5 : productId === 'bond-10' ? 10 : productId === 'bond-corp' ? 7 : undefined;
+      const couponRate = productId === 'bond-5' ? 0.028 : productId === 'bond-10' ? 0.032 : productId === 'bond-corp' ? 0.041 : undefined;
+      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: asset === 'stocks' ? requestedShares : undefined, bondUnits: asset === 'bonds' ? requestedBondUnits : undefined, faceValue: asset === 'bonds' ? 10000 : undefined, maturityYears, couponRate };
       setProductHoldings((current) => [...current, purchase]);
       setProductHistory((current) => [...current, purchase]);
     }
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
     if (asset === 'stocks') setStockTradeShares((current) => ({ ...current, [productId]: '' }));
+    if (asset === 'bonds') setBondTradeUnits((current) => ({ ...current, [productId]: '' }));
   };
 
   const sellStock = (holdingId: string) => {
@@ -360,6 +370,24 @@ export default function Page() {
     setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
   };
 
+  const sellBond = (holdingId: string) => {
+    const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'bonds');
+    if (!holding) return;
+    const owned = holding.bondUnits || 0;
+    const units = Number(bondTradeUnits['sell-'+holdingId] || 0);
+    if (!Number.isInteger(units) || units <= 0) return alert('請輸入要賣出的整數張數');
+    if (units > owned) return alert('賣出張數不能超過目前持有');
+    const quote = bondPrices[holding.productId] || 100;
+    const face = holding.faceValue || 10000;
+    const proceeds = units * face * quote / 100;
+    const costPerUnit = holding.amount / Math.max(owned, 1);
+    const costSold = costPerUnit * units;
+    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount: item.amount-costSold}]));
+    setGame((current) => ({...current, portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,bonds:Math.max(0,current.portfolio.bonds-proceeds)}, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
+    setBondTradeUnits((current)=>({...current,['sell-'+holdingId]:''}));
+  };
+
+  const bondHoldings = productHoldings.filter((holding) => holding.asset === 'bonds');
   const stockHoldings = productHoldings.filter((holding) => holding.asset === 'stocks');
   const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+h.amount,0);
 
@@ -382,7 +410,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices }));
       alert('遊戲已儲存');
     }
   };
@@ -401,19 +429,43 @@ export default function Page() {
     if (game.pendingChoice || game.completed) return;
 
     const nextStockPrices: Record<string, number> = { ...stockPrices };
+    const newMonthlyPaths: Record<string, number[]> = {};
     Object.keys(nextStockPrices).forEach((id) => {
-      const volatility = id === 'stock-tech' ? 0.28 : id === 'stock-dividend' ? 0.14 : 0.18;
-      const annualReturn = 0.06 + (Math.random() - 0.45) * volatility;
-      nextStockPrices[id] = Math.max(20, nextStockPrices[id] * (1 + annualReturn));
+      const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12 } : { drift: 0.07, vol: 0.16 };
+      let price = nextStockPrices[id];
+      const path:number[] = [];
+      for (let month=0; month<12; month++) {
+        const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
+        price = Math.max(5, price * (1 + profile.drift/12 + shock));
+        path.push(price);
+      }
+      nextStockPrices[id] = price;
+      newMonthlyPaths[id] = path;
     });
     setStockPrices(nextStockPrices);
     setStockPriceHistory((current) => {
       const next = { ...current };
-      Object.keys(nextStockPrices).forEach((id) => { next[id] = [...(next[id] || [100]), nextStockPrices[id]]; });
+      Object.keys(nextStockPrices).forEach((id) => { next[id] = [...(next[id] || [stockPrices[id]]), ...newMonthlyPaths[id]]; });
       return next;
     });
+
+    // Bond quotes are per 100 face value. Rates up => prices down; longer duration moves more.
+    const rateShock = (Math.random() - 0.5) * 0.018;
+    const nextBondPrices:Record<string,number> = {...bondPrices};
+    Object.keys(nextBondPrices).forEach((id)=>{
+      const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
+      const creditShock = id === 'bond-corp' ? (Math.random()-0.5)*0.035 : 0;
+      nextBondPrices[id] = clamp(nextBondPrices[id] * (1 - duration*rateShock + creditShock), 65, 125);
+    });
+    setBondPrices(nextBondPrices);
+
     const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
-    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue}}));
+    const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
+    const bondCoupons = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(h.couponRate||0),0);
+    const maturingBonds = productHoldings.filter((h)=>h.asset==='bonds' && h.maturityYears && game.age+1 >= h.boughtAge+h.maturityYears);
+    const maturedFace = maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000),0);
+    if (maturingBonds.length) setProductHoldings((current)=>current.filter((h)=>!maturingBonds.some((m)=>m.id===h.id)));
+    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace}, eventHistory:[...current.eventHistory, ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
 
     // Participating policies are recurring premium contracts.
     // The first entered amount becomes the fixed annual premium for the full premium term.
@@ -462,7 +514,7 @@ export default function Page() {
 
     setGame((current) => {
       const totalBefore = sumPortfolio(current.portfolio);
-      const rebalanced = getAssetValueByAllocation(totalBefore, current.allocations);
+      const rebalanced = { ...current.portfolio };
 
       const inflationRate = clamp(0.018 + Math.random() * 0.06, 0.01, 0.08);
       const marketEvent = randomFrom(MARKET_EVENTS);
@@ -473,15 +525,15 @@ export default function Page() {
       const baseReturns: Record<AssetKey, number> = {
         cash: 0.014 + inflationRate * 0.2,
         deposit: 0.025 + (Math.random() * 0.04),
-        bonds: 0.03 + (Math.random() * 0.04),
-        stocks: 0.08 + (Math.random() * 0.12),
+        bonds: 0,
+        stocks: 0,
         realEstate: 0.045 + (Math.random() * 0.09),
         insurance: 0.038 + (Math.random() * 0.05),
       };
 
       let assetsAfterMarket: Portfolio = { ...rebalanced };
       ASSET_KEYS.forEach((key) => {
-        const modifier = marketEvent.effect[key] ?? 0;
+        const modifier = (key === 'stocks' || key === 'bonds') ? 0 : (marketEvent.effect[key] ?? 0);
         assetsAfterMarket[key] = rebalanced[key] * (1 + baseReturns[key] + modifier);
       });
 
@@ -861,7 +913,7 @@ export default function Page() {
                             <div className="stock-live-price">目前每股 <b>NT${(stockPrices[product.id] || 100).toFixed(2)}</b></div>
                             <label className="money-input-wrap"><span>股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入股數" value={stockTradeShares[product.id] || ''} onChange={(event) => setStockTradeShares((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
                             <small>預估成交金額：NT${roundMoney(Number(stockTradeShares[product.id] || 0) * (stockPrices[product.id] || 100)).toLocaleString('en-US')}</small>
-                          </div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
+                          </div> : asset === 'bonds' ? <div className="stock-order-box"><div className="stock-live-price">目前價格 <b>{(bondPrices[product.id]||100).toFixed(2)}</b> / 面額100</div><label className="money-input-wrap"><span>張數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入張數" value={bondTradeUnits[product.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,[product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>每張面額 NT$10,000 · 預估成交 NT${roundMoney(Number(bondTradeUnits[product.id]||0)*10000*(bondPrices[product.id]||100)/100).toLocaleString('en-US')}</small></div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
                           <button onClick={() => buyProduct(asset, product.id)}>購買</button>
                         </div>
                       </div>
@@ -941,6 +993,9 @@ export default function Page() {
               <div className="market-years"><span>25歲</span><span>現在 {game.age}歲</span></div>
             </div>
           })}
+          <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
+          {productCatalog.bonds.map((product)=><div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div></div>)}
+          {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
           {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
             <div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div>
