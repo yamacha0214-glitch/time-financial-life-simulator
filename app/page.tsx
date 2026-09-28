@@ -7,7 +7,7 @@ const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
-const MARKET_MODEL_VERSION = 5;
+const MARKET_MODEL_VERSION = 6;
 
 type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string };
 
@@ -102,7 +102,7 @@ const buildPreGameMarket = () => {
     const creditShock = id === 'bond-corp' ? -(signals.creditSpread-0.018)*1.8 + signals.news*0.012 : signals.news*0.003;
     bondPrices[id] = clamp(base * (1-duration*rateShock+creditShock),65,125);
   });
-  return { stockPrices, stockPriceHistory, bondPrices, signals };
+  return { stockPrices, stockPriceHistory, bondPrices, signals, preGameReport: buildAnnualReport(0, 24, signals) };
 };
 
 type AssetKey = (typeof ASSET_KEYS)[number];
@@ -350,7 +350,7 @@ export default function Page() {
   const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
   const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
-  const [annualReports, setAnnualReports] = useState<AnnualReport[]>([]);
+  const [annualReports, setAnnualReports] = useState<AnnualReport[]>([initialMarket.preGameReport]);
   const [reportOpen, setReportOpen] = useState<number | null>(null);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
@@ -382,6 +382,8 @@ export default function Page() {
           setStockPrices(migratedMarket.stockPrices);
           setStockPriceHistory(migratedMarket.stockPriceHistory);
           setBondPrices(migratedMarket.bondPrices);
+          setMarketSignals(migratedMarket.signals);
+          setAnnualReports([migratedMarket.preGameReport]);
         }
       }
     } catch {}
@@ -506,6 +508,9 @@ export default function Page() {
     setStockPrices(restartedMarket.stockPrices);
     setStockPriceHistory(restartedMarket.stockPriceHistory);
     setBondPrices(restartedMarket.bondPrices);
+    setMarketSignals(restartedMarket.signals);
+    setAnnualReports([restartedMarket.preGameReport]);
+    setReportOpen(null);
     setStockTradeShares({});
     setBondTradeUnits({});
     if (typeof window !== 'undefined') {
@@ -993,7 +998,7 @@ export default function Page() {
                   <div className="annual-report-list">
                     {[...annualReports].reverse().map((report)=><div key={report.year} className="annual-report-item">
                       <button onClick={()=>setReportOpen(reportOpen===report.year?null:report.year)}>
-                        <strong>第 {report.year} 年金融年報</strong><span>{report.age}歲 {reportOpen===report.year?'收起':'查看 →'}</span>
+                        <strong>{report.year===0?'遊戲開始前一年｜金融年報':`第 ${report.year} 年金融年報`}</strong><span>{report.year===0?'市場背景':`${report.age}歲`} {reportOpen===report.year?'收起':'查看 →'}</span>
                       </button>
                       {reportOpen===report.year && <div className="annual-report-detail">
                         {report.events.map((event)=><p key={event.label}><b>{event.label}</b><span>{event.text}</span></p>)}
