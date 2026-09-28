@@ -926,8 +926,8 @@ export default function Page() {
         // Only operations created during this advanceYear belong to this year's history.
         // eventHistory is cumulative, so use its pre-year length as the boundary.
         actions: nextEventHistory.slice(current.eventHistory.length).filter((x) => !x.includes('金融年報：')),
-        changes: [
-          '現金｜期末 NT
+        changes: [],
+      };
 
       const newHistory = [...current.history, nextHistory];
       const maxDrawdown = Math.max(
