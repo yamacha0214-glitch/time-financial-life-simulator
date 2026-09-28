@@ -7,3 +7,11 @@
 .holdings-status{padding:14px 0 18px;border-bottom:1px solid #26364d;margin-bottom:18px}.empty-holdings{color:#8fa0b5;margin:8px 0}.holdings-strip{display:flex;gap:10px;overflow-x:auto;padding:4px 0 8px}.holding-chip{min-width:190px;padding:12px 14px;border:1px solid #34445e;border-radius:12px;background:#111d2d;display:grid;gap:5px}.holding-chip strong{font-size:14px}.holding-chip span{font-size:16px;font-weight:800}.holding-chip small{color:#8fa0b5}
 
 .holdings-tabs{display:flex;gap:8px;overflow-x:auto;margin-bottom:14px}.holdings-tabs button{flex:0 0 auto;min-width:120px;padding:10px 16px;border:1px solid #34445e;border-radius:999px;background:#0b1421;color:#8fa0b5;font-weight:800}.holdings-tabs button.active{background:#eaf1fb;color:#0b1421;border-color:#eaf1fb}.history-chip{opacity:.9}
+
+/* Keep holdings/history at a fixed height and scroll horizontally instead of growing the page. */
+.holdings-status{overflow:hidden}
+.holdings-strip{display:flex;flex-wrap:nowrap;gap:10px;overflow-x:scroll;overflow-y:hidden;max-width:100%;padding:4px 0 12px;scroll-snap-type:x proximity;-webkit-overflow-scrolling:touch;scrollbar-width:auto;scrollbar-color:#60718a #111d2d}
+.holdings-strip::-webkit-scrollbar{height:7px}
+.holdings-strip::-webkit-scrollbar-track{background:#111d2d;border-radius:999px}
+.holdings-strip::-webkit-scrollbar-thumb{background:#60718a;border-radius:999px}
+.holding-chip{flex:0 0 210px;scroll-snap-align:start}
