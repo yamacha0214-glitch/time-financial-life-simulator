@@ -901,7 +901,9 @@ export default function Page() {
         eventTitle: `第 ${current.year} 年金融年報`,
         portfolio: nextPortfolio,
         returnRate: (() => { const startTotal = current.history.length ? current.history[current.history.length - 1].total : sumPortfolio(current.portfolio); return startTotal > 0 ? (finalTotal - annualCapital - startTotal) / startTotal : 0; })(),
-        actions: nextEventHistory.slice(current.history.length ? current.eventHistory.lastIndexOf(current.history[current.history.length - 1].eventTitle) + 1 : 0).filter((x) => !x.includes('金融年報：')),
+        // Only operations created during this advanceYear belong to this year's history.
+        // eventHistory is cumulative, so use its pre-year length as the boundary.
+        actions: nextEventHistory.slice(current.eventHistory.length).filter((x) => !x.includes('金融年報：')),
       };
 
       const newHistory = [...current.history, nextHistory];
