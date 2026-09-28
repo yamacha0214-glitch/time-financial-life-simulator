@@ -67,3 +67,6 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 .chart-range-title{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:11px}.chart-range-title span{font-size:12px;color:#8fa3bb}
 .chart-range-controls{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px;align-items:center}.chart-range-controls select{min-width:0;width:100%;background:#101d2d;color:#eef5ff;border:1px solid #36506d;border-radius:12px;padding:10px;font:inherit;font-weight:700}.chart-range-controls>span{color:#7f94ac}
 .chart-range-shortcuts{display:flex;gap:7px;overflow-x:auto;margin-top:10px;padding-bottom:2px}.chart-range-shortcuts button{flex:0 0 auto;border:1px solid #334d69;border-radius:999px;background:#101d2d;color:#b8c8da;padding:7px 12px;font-weight:800}.chart-range-shortcuts button:active{background:#1b3047}
+
+.chart-range-end{min-width:0;width:100%;background:#101d2d;color:#eef5ff;border:1px solid #36506d;border-radius:12px;padding:10px;font-weight:800;text-align:center}
+.chart-range-note{margin:9px 0 0;color:#7f94ac;font-size:12px;line-height:1.5}
