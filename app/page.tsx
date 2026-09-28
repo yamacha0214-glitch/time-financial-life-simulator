@@ -790,11 +790,15 @@ export default function Page() {
         realEstate: nextProperties.length ? propertyEquity : rebalanced.realEstate * (1 + reReturn),
         insurance: rebalanced.insurance * (1 + insuranceReturn),
       };
-      nextPortfolio.cash += bondCoupons + maturedFace + propertyCashFlow;
+      // Annual Capital: simplified outside investable cash flow.
+      // Living costs and salary management stay outside the game; the player simply receives
+      // NT$300,000 of fresh investable capital each year.
+      const annualCapital = 300000;
+      nextPortfolio.cash += bondCoupons + maturedFace + propertyCashFlow + annualCapital;
 
       const report = buildAnnualReport(current.year, current.age, signals);
       const nextLifeStatus = report.summary;
-      const nextEventHistory = [...current.eventHistory, `第 ${current.year} 年金融年報：${report.summary}`];
+      const nextEventHistory = [...current.eventHistory, `年度新增資金：NT$300,000 已進入現金。`, `第 ${current.year} 年金融年報：${report.summary}`];
       const nextAnalysis = '本年度資產表現與金融年報共用同一組市場訊號，不再由單一隨機事件額外修改資產價格。';
 
       const finalTotal = sumPortfolio(nextPortfolio);
