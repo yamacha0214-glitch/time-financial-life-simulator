@@ -22,3 +22,13 @@
 .holdings-strip{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overscroll-behavior-x:contain}
 .holding-chip{width:210px;min-width:210px;max-width:210px;box-sizing:border-box;overflow:hidden}
 .holding-chip strong,.holding-chip span,.holding-chip small{max-width:100%;overflow-wrap:anywhere}
+
+/* Hard mobile overflow fix: grid children default to min-width:auto, which let the rail widen the whole document. */
+html,body{width:100%;max-width:100%;overflow-x:hidden}
+.page-shell,.app-wrap,.layout,.allocations-panel,.side-stack,.panel{width:100%;max-width:100%;min-width:0}
+.layout>*{min-width:0}
+.allocations-panel{overflow:hidden}
+.holdings-status{display:block;width:100%;max-width:100%;min-width:0;overflow:hidden}
+.holdings-tabs{width:100%;max-width:100%;min-width:0}
+.holdings-strip{display:flex;width:100%;max-width:100%;min-width:0;overflow-x:auto!important;overflow-y:hidden;contain:inline-size}
+@media(max-width:760px){.app-wrap{overflow:hidden}.layout{display:block}.side-stack{margin-top:14px}.holdings-strip{width:calc(100vw - 58px);max-width:calc(100vw - 58px)}}
