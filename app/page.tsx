@@ -1054,10 +1054,10 @@ export default function Page() {
                   ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
                 ].map(([key,label,status])=><button key={key} onClick={()=>{
                   const bodies:Record<string,React.ReactNode>={
-                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>觀察企業現金流、獲利與估值環境。這些因素影響長期報酬機率，但不直接決定短期價格。</p></>,
-                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>模擬法人與基金資金流向；流入可能推升需求，也可能出現在估值偏高階段。</p></>,
-                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>綜合政策、產業與企業消息；市場可能提前定價，因此好消息不等於後續必漲。</p></>,
-                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>描述近期價格行為與趨勢，不代表未來必然延續。</p></>
+                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>你可以把基本面想成「這家公司本身過得好不好」。會看它有沒有賺錢、景氣好不好，以及借錢成本高不高。公司很會賺錢通常是好事，但股價短期不一定馬上上漲。</p></>,
+                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>籌碼面是在看「現在大家的錢往哪裡跑」。大型基金和投資人一直買，通常會增加買盤；一直賣則可能形成壓力。但很多人買，不代表它一定便宜。</p></>,
+                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>消息面是在看「最近發生了什麼事」。例如新產品、政府政策、戰爭或利率消息，都可能讓大家改變想法。但市場常常會提前猜到消息，所以看到好消息時，價格不一定還會繼續漲。</p></>,
+                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>技術面是在看「價格最近怎麼走」。如果最近一直漲，代表目前走勢比較強；一直跌則比較弱。但它比較像看車子現在往哪個方向開，不代表它等等不會轉彎。</p></>
                   }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
                 }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
@@ -1072,10 +1072,10 @@ export default function Page() {
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
               ].map(([key,label,status])=><button key={key} onClick={()=>{
                 const bodies:Record<string,React.ReactNode>={
-                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>政府債較重視通膨與償債環境；公司債另外受到企業信用與景氣循環影響。</p></>,
-                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>Risk-off 時資金可能流向高品質債券，但公司債仍可能因信用風險承壓。</p></>,
-                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>涵蓋央行政策、信用評級、通膨與總體消息；市場可能提前定價。</p></>,
-                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>殖利率上升通常壓低既有債券價格；期限越長，Duration 敏感度通常越高。</p></>
+                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>債券的基本面是在看「借錢給它安不安全」。政府債主要看通膨、利率和政府償債能力；公司債還要看公司有沒有能力按時付利息、還本金。</p></>,
+                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>籌碼面是在看「市場的錢正在往哪裡移動」。大家害怕風險時，資金常跑去比較安全的政府債；但公司債還是可能因為大家擔心公司還不起錢而被賣掉。</p></>,
+                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>消息面是在看「最近有沒有事情改變大家對這張債券的看法」。例如央行升息、公司被降評級或通膨突然變高，都可能影響債券價格。</p></>,
+                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>利率面可以先記一個簡單規則：市場利率上升時，舊債券通常會變得比較不值錢；利率下降時則相反。而且通常剩越久才到期的債券，價格受到利率影響越大。</p></>
                 }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
