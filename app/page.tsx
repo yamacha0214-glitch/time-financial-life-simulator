@@ -934,10 +934,6 @@ export default function Page() {
             <span>累積通膨</span>
             <strong>{(game.cumulativeInflation * 100).toFixed(1)}%</strong>
           </div>
-          <div className="stat-card status">
-            <span>人生狀態</span>
-            <strong>{game.lifeStatus}</strong>
-          </div>
         </section>
 
         <section className="layout">
