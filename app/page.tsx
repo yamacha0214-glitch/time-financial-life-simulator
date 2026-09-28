@@ -662,7 +662,7 @@ export default function Page() {
         <section className="layout">
           <div className="panel allocations-panel">
             <div className="panel-header">
-              <h2>資產配置</h2>
+              <h2>V2 開發分支：資產持有與交易</h2>
               <span className={allocationValid ? '' : 'allocation-warning'}>{allocationValid ? '配置完成 ✓' : `尚差 NT${roundMoney(Math.abs(allocationDifference)).toLocaleString('en-US')} ${allocationDifference > 0 ? '未配置' : '超額配置'}`}</span>
             </div>
             {allocationList.map(({ asset, percentage, amount }) => (
@@ -692,8 +692,12 @@ export default function Page() {
             ))}
 
             <div className="cta-row">
+              <div className="panel" style={{marginBottom:12}}>
+                <div className="eyebrow">V2 CORE MODEL</div>
+                <p>接下來的 V2 將改成 CASH FLOW → DECISION → TIME。現有資產會持續存在，玩家只能用可用現金買入新資產，賣出後才會回到現金。</p>
+              </div>
               <button className="primary" disabled={!canAdvance} onClick={advanceYear}>
-                度過這一年 →
+                讓時間前進一年 →
               </button>
             </div>
           </div>
