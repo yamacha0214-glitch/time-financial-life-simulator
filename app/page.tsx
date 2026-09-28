@@ -452,12 +452,60 @@ export default function Page() {
   };
 
   const buyProperty = (listing:PropertyListing) => {
-    const downPayment=listing.price*listing.downPaymentRate;
-    if(game.portfolio.cash<downPayment) return alert('現金不足以支付頭期款');
-    const mortgage=listing.price-downPayment;
-    setPropertyHoldings(x=>[...x,{...listing,boughtAge:game.age,purchasePrice:listing.price,mortgageBalance:mortgage,monthlyRent:listing.marketRent,rentalMode:'vacant',lastRentedMonths:0,lastRentalIncome:0,currentValue:listing.price}]);
-    setPropertyListings(x=>x.filter(p=>p.id!==listing.id));
-    setGame(x=>({...x,portfolio:{...x.portfolio,cash:x.portfolio.cash-downPayment,realEstate:x.portfolio.realEstate+downPayment},eventHistory:[...x.eventHistory,'買入房產：'+listing.name+'，總價 NT
+    const downPayment = listing.price * listing.downPaymentRate;
+    if (game.portfolio.cash < downPayment) return alert('現金不足以支付頭期款');
+    const mortgage = listing.price - downPayment;
+    setPropertyHoldings((current) => [...current, {
+      ...listing,
+      boughtAge: game.age,
+      purchasePrice: listing.price,
+      mortgageBalance: mortgage,
+      monthlyRent: listing.marketRent,
+      rentalMode: 'vacant',
+      lastRentedMonths: 0,
+      lastRentalIncome: 0,
+      currentValue: listing.price,
+    }]);
+    setPropertyListings((current) => current.filter((property) => property.id !== listing.id));
+    setGame((current) => ({
+      ...current,
+      portfolio: {
+        ...current.portfolio,
+        cash: current.portfolio.cash - downPayment,
+        realEstate: current.portfolio.realEstate + downPayment,
+      },
+      eventHistory: [...current.eventHistory, '買入房產：' + listing.name + '，總價 NT$' + listing.price.toLocaleString('en-US') + '，頭期 NT$' + roundMoney(downPayment).toLocaleString('en-US') + '。'],
+      lifeStatus: '已購入 ' + listing.name + '，房貸將逐年攤還。',
+    }));
+  };
+
+  const setPropertyRental = (id:string, mode:'vacant'|'rent') => {
+    const requested = Number(rentInputs[id] || 0);
+    setPropertyHoldings((current) => current.map((property) => property.id !== id ? property : {
+      ...property,
+      rentalMode: mode,
+      monthlyRent: mode === 'rent' && requested > 0 ? requested : property.monthlyRent,
+    }));
+  };
+
+  const sellProperty = (id:string) => {
+    const property = propertyHoldings.find((item) => item.id === id);
+    if (!property) return;
+    const equity = Math.max(0, property.currentValue - property.mortgageBalance);
+    setPropertyHoldings((current) => current.filter((item) => item.id !== id));
+    setGame((current) => ({
+      ...current,
+      portfolio: {
+        ...current.portfolio,
+        cash: current.portfolio.cash + equity,
+        realEstate: Math.max(0, current.portfolio.realEstate - equity),
+      },
+      eventHistory: [...current.eventHistory, '出售房產：' + property.name + '，清償剩餘房貸後回收 NT$' + roundMoney(equity).toLocaleString('en-US') + '。'],
+      lifeStatus: '已出售 ' + property.name + '。',
+    }));
+  };
+
+  const buyProduct = (asset: Exclude<AssetKey, 'cash'>, productId: string) => {
     const requestedShares = asset === 'stocks' ? Number(stockTradeShares[productId] || 0) : 0;
     const requestedBondUnits = asset === 'bonds' ? Number(bondTradeUnits[productId] || 0) : 0;
     const marketPrice = asset === 'stocks' ? (stockPrices[productId] || 100) : 0;
