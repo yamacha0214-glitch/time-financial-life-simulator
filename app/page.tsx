@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 const STORAGE_KEY = 'time-financial-life-simulator-v2';
+const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 type AssetKey = (typeof ASSET_KEYS)[number];
 type Portfolio = Record<AssetKey, number>;
@@ -266,12 +267,25 @@ export default function Page() {
     if (saved) {
       setGame({ ...saved, pendingChoice: null, completed: false });
     }
+    try {
+      const savedProducts = window.localStorage.getItem(HOLDINGS_KEY);
+      if (savedProducts) {
+        const parsed = JSON.parse(savedProducts);
+        if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
+        if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
+      }
+    } catch {}
   }, []);
 
   useEffect(() => {
     if (!isMounted) return;
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game, isMounted]);
+
+  useEffect(() => {
+    if (!isMounted) return;
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory }));
+  }, [productHoldings, productHistory, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -342,14 +356,18 @@ export default function Page() {
   const handleRestart = () => {
     const fresh = buildInitialState();
     setGame(fresh);
+    setProductHoldings([]);
+    setProductHistory([]);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+      window.localStorage.removeItem(HOLDINGS_KEY);
     }
   };
 
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory }));
       alert('遊戲已儲存');
     }
   };
