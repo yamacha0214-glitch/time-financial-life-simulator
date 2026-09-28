@@ -441,7 +441,7 @@ export default function Page() {
       const finalized: GameState = {
         ...current,
         age: nextAge,
-        year: current.year,
+        year: current.year + 1,
         portfolio: nextPortfolio,
         income: nextIncome,
         expense: nextExpense,
@@ -536,7 +536,7 @@ export default function Page() {
         year: current.year - 1,
         age: current.age,
         total: sumPortfolio(nextPortfolio),
-        real: getRealWealth(sumPortfolio(nextPortfolio), current.cumulativeInflation + current.inflationRate),
+        real: getRealWealth(sumPortfolio(nextPortfolio), current.cumulativeInflation),
         liquidity: getLiquidity(nextPortfolio),
         eventTitle: current.lastLifeEvent.title,
       }];
@@ -544,7 +544,7 @@ export default function Page() {
       const finalState: GameState = {
         ...current,
         age: nextAge,
-        year: current.year + 1,
+        year: current.year,
         portfolio: nextPortfolio,
         lastLifeEvent: null,
         pendingChoice: null,
