@@ -748,7 +748,6 @@ export default function Page() {
     // Participating policies are recurring premium contracts.
     // The first entered amount becomes the fixed annual premium for the full premium term.
     const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
-    const insuranceValueBeforePremium = productHoldings.filter((h)=>h.asset==='insurance'&&h.premiumTerm).reduce((sum,h)=>sum+insuranceSurrenderValue(h.amount,h.premiumTerm!,Math.max(1,game.age-h.boughtAge+1),signals),0);
     if (activePolicies.length) {
       const due = activePolicies.reduce((sum, holding) => sum + holding.amount, 0);
       if (game.portfolio.cash < due) {
