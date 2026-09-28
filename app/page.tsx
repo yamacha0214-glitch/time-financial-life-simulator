@@ -597,13 +597,22 @@ export default function Page() {
 
   const setInsuranceWithdrawalPlan=(holdingId:string)=>{
     const mode=insuranceWithdrawalModes[holdingId]||'fixed';
-    const start=Math.max(1,Number(insuranceWithdrawalStartYears[holdingId]||6));
+    const startYear=Math.max(1,Number(insuranceWithdrawalStartYears[holdingId]||6));
     const amount=Number(insuranceWithdrawals[holdingId]||0);
     const percent=Number(insuranceWithdrawalPercents[holdingId]||0);
     if(mode==='fixed'&&amount<=0)return alert('請輸入每年固定提取金額');
     if(mode==='percent'&&(percent<=0||percent>100))return alert('請輸入 0～100% 的提取比例');
-    setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:mode,withdrawalAmount:mode==='fixed'?amount:undefined,withdrawalPercent:mode==='percent'?percent:undefined,withdrawalStartYear:start,cumulativeWithdrawals:h.cumulativeWithdrawals||0}));
-    setGame(cur=>({...cur,eventHistory:[...cur.eventHistory,`保單提取計畫：設定第 ${start} 保單年度起，每年${mode==='fixed'?'固定提取 NT
+    setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:mode,withdrawalAmount:mode==='fixed'?amount:undefined,withdrawalPercent:mode==='percent'?percent:undefined,withdrawalStartYear:startYear,cumulativeWithdrawals:h.cumulativeWithdrawals||0}));
+    const planText=mode==='fixed'
+      ? '每年固定提取 NT$'+roundMoney(amount).toLocaleString('en-US')
+      : '每年提取原始總預定保費的 '+percent+'%';
+    setGame(cur=>({...cur,eventHistory:[...cur.eventHistory,'保單提取計畫：設定第 '+startYear+' 保單年度起，'+planText+'。'],lifeStatus:'已設定分紅保單年度提取計畫。'}));
+  };
+  const cancelInsuranceWithdrawalPlan=(holdingId:string)=>{
+    setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:'none',withdrawalAmount:undefined,withdrawalPercent:undefined,withdrawalStartYear:undefined}));
+  };
+
+  const sellStock = (holdingId: string) => {
     const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'stocks');
     if (!holding) return;
     const ownedShares = holding.shares || 0;
