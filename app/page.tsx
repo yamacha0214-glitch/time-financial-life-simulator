@@ -344,11 +344,10 @@ export default function Page() {
   const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
   const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
-  const [openResearch, setOpenResearch] = useState<string | null>(null);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
-  const toggleResearch = (key:string, title?:string, body?:React.ReactNode) => {
-    if (researchOverlay?.key===key) return setResearchOverlay(null);
-    if (title && body) setResearchOverlay({key,title,body});
+  const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
+    if (researchOverlay?.key===key) setResearchOverlay(null);
+    else setResearchOverlay({key,title,body});
   };
 
   useEffect(() => {
@@ -1044,7 +1043,14 @@ export default function Page() {
                   ['flow','籌碼面',signalLabel(research.flow,'流入','流出')],
                   ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
                   ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
-                ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
+                ].map(([key,label,status])=><button key={key} onClick={()=>{
+                  const bodies:Record<string,React.ReactNode>={
+                    fundamental:<><p>企業獲利成長 {(marketSignals.earnings*100).toFixed(1)}% · 景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 政策利率 {(marketSignals.policyRate*100).toFixed(1)}%</p><p>觀察企業現金流、獲利與估值環境。這些因素影響長期報酬機率，但不直接決定短期價格。</p></>,
+                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>模擬法人與基金資金流向；流入可能推升需求，也可能出現在估值偏高階段。</p></>,
+                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>綜合政策、產業與企業消息；市場可能提前定價，因此好消息不等於後續必漲。</p></>,
+                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>描述近期價格行為與趨勢，不代表未來必然延續。</p></>
+                  }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
+                }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
             </div>
           })}
@@ -1055,7 +1061,14 @@ export default function Page() {
                 ['flow','籌碼面',signalLabel(research.flow,'需求偏強','需求偏弱')],
                 ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
-              ].map(([key,label,status])=><button key={key} onClick={()=>toggleResearch(product.id+'-'+key)} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
+              ].map(([key,label,status])=><button key={key} onClick={()=>{
+                const bodies:Record<string,React.ReactNode>={
+                  fundamental:<><p>景氣成長 {(marketSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>政府債較重視通膨與償債環境；公司債另外受到企業信用與景氣循環影響。</p></>,
+                  flow:<><p>{signalLabel(-marketSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>Risk-off 時資金可能流向高品質債券，但公司債仍可能因信用風險承壓。</p></>,
+                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>涵蓋央行政策、信用評級、通膨與總體消息；市場可能提前定價。</p></>,
+                  rate:<><p>政策利率 {(marketSignals.policyRate*100).toFixed(1)}% · 通膨 {(marketSignals.inflation*100).toFixed(1)}%</p><p>殖利率上升通常壓低既有債券價格；期限越長，Duration 敏感度通常越高。</p></>
+                }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
+              }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
@@ -1080,6 +1093,7 @@ export default function Page() {
           </section>
         )}
 
+        {researchOverlay && <div className="research-overlay-backdrop" onClick={()=>setResearchOverlay(null)}><div className="research-overlay-card" onClick={(e)=>e.stopPropagation()}><button className="research-close" onClick={()=>setResearchOverlay(null)}>×</button><strong>{researchOverlay.title}</strong>{researchOverlay.body}</div></div>}
         {game.completed && (
           <div className="modal-overlay">
             <div className="report-card">
