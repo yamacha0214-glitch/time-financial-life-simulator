@@ -298,27 +298,9 @@ export default function Page() {
     amount: game.portfolio[asset],
   })), [game.portfolio, totalAssets]);
 
-  const updateAllocationAmount = (asset: AssetKey, rawValue: string) => {
-    if (game.completed) return;
-    const cleaned = rawValue.replace(/[^0-9]/g, '');
-    const amount = cleaned === '' ? 0 : Number(cleaned);
+  // V2 holdings are transaction-driven. Current cash is a balance, not a target
+  // allocation input, so it must never be editable directly.
 
-    setGame((current) => {
-      const total = sumPortfolio(current.portfolio);
-      if (total <= 0) return current;
-
-      // The player enters actual NT$ amounts. We convert that amount to a target
-      // allocation percentage without silently changing any other asset.
-      const nextPercent = clamp((amount / total) * 100, 0, 100);
-      return {
-        ...current,
-        allocations: {
-          ...current.allocations,
-          [asset]: nextPercent,
-        },
-      };
-    });
-  };
 
   const productCatalog: Record<Exclude<AssetKey, 'cash'>, Array<{ id: string; label: string }>> = {
     deposit: [{ id: 'deposit-1', label: '一年期定存｜2.0%｜1年到期' }, { id: 'deposit-3', label: '三年期定存｜2.4%｜3年到期' }],
@@ -778,12 +760,9 @@ export default function Page() {
                   <label className="money-input-wrap">
                     <span>NT$</span>
                     <input
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={asset === 'cash' ? roundMoney(amount) : roundMoney(game.portfolio[asset])}
-                      readOnly={asset !== 'cash'}
-                      onChange={(event) => asset === 'cash' && updateAllocationAmount(asset, event.target.value)}
-                      aria-label={`${ASSET_META[asset].label}配置金額`}
+                      value={roundMoney(game.portfolio.cash).toLocaleString('en-US')}
+                      readOnly
+                      aria-label="目前現金餘額"
                     />
                   </label>
                   <div className="value-box compact-value">
