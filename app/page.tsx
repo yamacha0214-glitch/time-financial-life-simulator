@@ -5,6 +5,30 @@ import { useEffect, useMemo, useState } from 'react';
 const STORAGE_KEY = 'time-financial-life-simulator-v2';
 const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
+
+// Participating-policy baseline calibrated from the supplied real benefit illustration.
+// Values are surrender-value / total scheduled premium ratios. Intermediate years are interpolated.
+// This is a generic TIME simulation curve, not a quotation for any insurer or policy.
+const INSURANCE_SURRENDER_CURVE: Array<[number, number]> = [
+  [1,0],[2,0],[3,0.26551],[4,0.409685],[5,0.58069],[10,1.255865],[15,1.74045],[20,2.54057],[25,3.53179],[30,4.9976],
+  [43,11.24431],[48,15.92205],[53,22.835625],[58,33.086535],[63,44.14993],[68,59.457],[73,79.3135]
+];
+const insuranceCurveRatio=(policyYear:number)=>{
+  const y=Math.max(1,policyYear);
+  const exact=INSURANCE_SURRENDER_CURVE.find(([year])=>year===y); if(exact)return exact[1];
+  const upper=INSURANCE_SURRENDER_CURVE.find(([year])=>year>y);
+  if(!upper)return INSURANCE_SURRENDER_CURVE[INSURANCE_SURRENDER_CURVE.length-1][1];
+  const ui=INSURANCE_SURRENDER_CURVE.indexOf(upper), lower=INSURANCE_SURRENDER_CURVE[Math.max(0,ui-1)];
+  const t=(y-lower[0])/(upper[0]-lower[0]); return lower[1]+(upper[1]-lower[1])*t;
+};
+const insuranceFulfillment=(signals:MarketSignals)=>clamp(1+(signals.growth-0.025)*1.5-(signals.creditSpread-0.018)*1.8+signals.news*0.035,0.78,1.12);
+const insuranceSurrenderValue=(annualPremium:number,premiumTerm:number,policyYear:number,signals:MarketSignals)=>{
+  const scheduledPremium=annualPremium*premiumTerm;
+  const base=scheduledPremium*insuranceCurveRatio(policyYear);
+  // Early values stay close to the illustration; market effects gradually affect the non-guaranteed portion.
+  const nonGuaranteedWeight=clamp((policyYear-2)/18,0,0.88);
+  return Math.max(0,base*((1-nonGuaranteedWeight)+nonGuaranteedWeight*insuranceFulfillment(signals)));
+};
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
 const MARKET_MODEL_VERSION = 6;
@@ -724,6 +748,7 @@ export default function Page() {
     // Participating policies are recurring premium contracts.
     // The first entered amount becomes the fixed annual premium for the full premium term.
     const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
+    const insuranceValueBeforePremium = productHoldings.filter((h)=>h.asset==='insurance'&&h.premiumTerm).reduce((sum,h)=>sum+insuranceSurrenderValue(h.amount,h.premiumTerm!,Math.max(1,game.age-h.boughtAge+1),signals),0);
     if (activePolicies.length) {
       const due = activePolicies.reduce((sum, holding) => sum + holding.amount, 0);
       if (game.portfolio.cash < due) {
@@ -776,10 +801,8 @@ export default function Page() {
         0.035 + signals.growth*1.25 - signals.policyRate*0.65 - signals.creditSpread*0.35 + productNoise(0.045),
         -0.16, 0.18
       );
-      const insuranceReturn = clamp(
-        0.04 + signals.growth*0.30 - signals.creditSpread*0.18 + productNoise(0.018),
-        0.005, 0.075
-      );
+      // Insurance is valued as a policy surrender value, not as principal compounded by an annual return.
+      const insuranceMarketValue = productHoldings.filter((h)=>h.asset==='insurance'&&h.premiumTerm).reduce((sum,h)=>sum+insuranceSurrenderValue(h.amount,h.premiumTerm!,Math.max(1,current.age+1-h.boughtAge+1),signals),0);
       const cashReturn = Math.max(0, signals.policyRate*0.45);
       const depositReturn = Math.max(0.005, signals.policyRate*0.72);
 
@@ -791,7 +814,7 @@ export default function Page() {
         stocks: stockMarketValue,
         bonds: Math.max(0, bondMarketValue - maturedFace),
         realEstate: nextProperties.length ? propertyEquity : rebalanced.realEstate * (1 + reReturn),
-        insurance: rebalanced.insurance * (1 + insuranceReturn),
+        insurance: insuranceMarketValue,
       };
       // Annual Capital: simplified outside investable cash flow.
       // Living costs and salary management stay outside the game; the player simply receives
