@@ -359,6 +359,8 @@ export default function Page() {
   const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const [chartHover, setChartHover] = useState<{id:string; index:number} | null>(null);
+  const [chartStartYear, setChartStartYear] = useState(0);
+  const [chartEndYear, setChartEndYear] = useState<number | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
     else setResearchOverlay({key,title,body});
@@ -896,6 +898,13 @@ export default function Page() {
   const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
   const selectedSignals = selectedMarket?.signals ?? marketSignals;
   const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
+  const availableMarketYears = marketSnapshots.map((x)=>x.year).sort((a,b)=>a-b);
+  const latestMarketYear = availableMarketYears[availableMarketYears.length-1] ?? 0;
+  const effectiveChartEndYear = chartEndYear ?? latestMarketYear;
+  const chartStartSnapshot = marketSnapshots.find((x)=>x.year===chartStartYear) ?? marketSnapshots[0];
+  const chartEndSnapshot = marketSnapshots.find((x)=>x.year===effectiveChartEndYear) ?? marketSnapshots[marketSnapshots.length-1];
+  const chartRangeSnapshots = marketSnapshots.filter((x)=>x.year>=chartStartSnapshot.year && x.year<=chartEndSnapshot.year).sort((a,b)=>a.year-b.year);
+  const chartYearLabel = (year:number) => year===0 ? '遊戲開始前一年' : `${marketSnapshots.find((x)=>x.year===year)?.age ?? 24+year}歲`;
 
   return (
     <main className="page-shell">
@@ -1086,18 +1095,22 @@ export default function Page() {
         </> : <section className="panel stock-market-page">
           <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>{selectedMarketYear===0?'PRE-GAME':`YEAR ${selectedMarketYear}`}</span></div>
           <div className="market-year-picker"><label htmlFor="market-year">檢視年度</label><select id="market-year" value={selectedMarketYear} onChange={(e)=>{setMarketYear(Number(e.target.value));setResearchOverlay(null)}}>{[...marketSnapshots].reverse().map((x)=><option key={x.year} value={x.year}>{x.year===0?'遊戲開始前一年｜市場背景':`第 ${x.year} 年｜${x.age}歲`}</option>)}</select></div>
+          <div className="chart-range-panel"><div className="chart-range-title"><strong>走勢圖期間</strong><span>自由比較跨年度價格</span></div><div className="chart-range-controls"><select aria-label="圖表起始年份" value={chartStartSnapshot.year} onChange={(e)=>{const y=Number(e.target.value);setChartStartYear(y);if(y>effectiveChartEndYear)setChartEndYear(y)}}>{availableMarketYears.filter(y=>y<=effectiveChartEndYear).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select><span>→</span><select aria-label="圖表結束年份" value={effectiveChartEndYear} onChange={(e)=>{const y=Number(e.target.value);setChartEndYear(y);if(y<chartStartSnapshot.year)setChartStartYear(y)}}>{availableMarketYears.filter(y=>y>=chartStartSnapshot.year).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select></div><div className="chart-range-shortcuts">{[1,3,5,10].map(n=><button key={n} onClick={()=>setChartStartYear(Math.max(0,effectiveChartEndYear-n+1))}>{n}年</button>)}<button onClick={()=>{setChartStartYear(0);setChartEndYear(latestMarketYear)}}>全部</button></div></div>
           {productCatalog.stocks.map((product) => {
-            const price=selectedMarket?.stockPrices[product.id]||stockPrices[product.id]||100; const hist=selectedMarket?.stockPaths[product.id]||stockPriceHistory[product.id]||[100];
-            const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
-            const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
-            const research=stockResearch(product.id,selectedSignals,hist);
+            const price=selectedMarket?.stockPrices[product.id]||stockPrices[product.id]||100;
+            const selectedHist=selectedMarket?.stockPaths[product.id]||stockPriceHistory[product.id]||[100];
+            const hist=chartRangeSnapshots.flatMap((snap)=>snap.stockPaths[product.id]||[]);
+            const chartHist=hist.length?hist:selectedHist;
+            const min=Math.min(...chartHist), max=Math.max(...chartHist), range=Math.max(1,max-min);
+            const points=chartHist.map((v,i)=>`${chartHist.length===1?0:(i/(chartHist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
+            const research=stockResearch(product.id,selectedSignals,selectedHist);
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
-              <div className="interactive-chart" onPointerMove={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(hist.length-1))})}} onPointerLeave={()=>setChartHover(null)} onPointerDown={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(hist.length-1))})}}>
+              <div className="interactive-chart" onPointerMove={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(chartHist.length-1))})}} onPointerLeave={()=>setChartHover(null)} onPointerDown={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(chartHist.length-1))})}}>
                 <div className="chart-y-axis"><span>NT${max.toFixed(0)}</span><span>NT${((max+min)/2).toFixed(0)}</span><span>NT${min.toFixed(0)}</span></div>
-                <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/>{chartHover?.id===product.id&&<line className="chart-crosshair" x1={(chartHover.index/Math.max(1,hist.length-1))*100} x2={(chartHover.index/Math.max(1,hist.length-1))*100} y1="0" y2="100"/>}</svg>
-                {chartHover?.id===product.id&&(()=>{const i=clamp(chartHover.index,0,hist.length-1);const v=hist[i];const monthIndex=selectedMarketYear===0?i:i+1;const label=selectedMarketYear===0?`遊戲開始前 ${12-i} 個月`:`${selectedMarket.age}歲 · 第 ${monthIndex} 月`;return <div className="chart-tooltip" style={{left:`${clamp((i/Math.max(1,hist.length-1))*100,12,82)}%`}}><strong>{label}</strong><span>NT${v.toFixed(2)}</span></div>})()}
+                <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/>{chartHover?.id===product.id&&<line className="chart-crosshair" x1={(chartHover.index/Math.max(1,chartHist.length-1))*100} x2={(chartHover.index/Math.max(1,chartHist.length-1))*100} y1="0" y2="100"/>}</svg>
+                {chartHover?.id===product.id&&(()=>{const i=clamp(chartHover.index,0,chartHist.length-1);const v=chartHist[i];const snapIndex=Math.min(chartRangeSnapshots.length-1,Math.floor(i/12));const monthIndex=(i%12)+1;const snap=chartRangeSnapshots[snapIndex];const label=snap?.year===0?`遊戲開始前 · 第 ${monthIndex} 月`:`${snap?.age ?? ''}歲 · 第 ${monthIndex} 月`;return <div className="chart-tooltip" style={{left:`${clamp((i/Math.max(1,chartHist.length-1))*100,12,82)}%`}}><strong>{label}</strong><span>NT${v.toFixed(2)}</span></div>})()}
               </div>
-              <div className="market-years"><span>{selectedMarketYear===0?'遊戲開始前 1 年':`${selectedMarket.age}歲年初`}</span><span>{selectedMarketYear===0?'24歲｜遊戲開始前':`${selectedMarket.age}歲年末`}</span></div>
+              <div className="market-years"><span>{chartYearLabel(chartStartSnapshot.year)}</span><span>{chartYearLabel(chartEndSnapshot.year)}</span></div>
               <div className="research-tabs">
                 {[
                   ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
