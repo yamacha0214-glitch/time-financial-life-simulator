@@ -257,9 +257,12 @@ export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
   const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
-  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number }>>([]);
-  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number }>>([]);
+  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number }>>([]);
+  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
+  const [mainView, setMainView] = useState<'game' | 'market'>('game');
+  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ 'stock-world': 100, 'stock-tech': 100, 'stock-dividend': 100 });
+  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [100], 'stock-tech': [100], 'stock-dividend': [100] });
 
   useEffect(() => {
     setIsMounted(true);
@@ -273,6 +276,8 @@ export default function Page() {
         const parsed = JSON.parse(savedProducts);
         if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
+        if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
+        if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
       }
     } catch {}
   }, []);
@@ -284,8 +289,8 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory }));
-  }, [productHoldings, productHistory, isMounted]);
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -324,12 +329,28 @@ export default function Page() {
     const product = productCatalog[asset].find((item) => item.id === productId);
     if (product) {
       const premiumTerm = productId === 'policy-5' ? 5 : productId === 'policy-10' ? 10 : undefined;
-      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined };
+      const price = asset === 'stocks' ? (stockPrices[productId] || 100) : undefined;
+      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: price ? amount / price : undefined };
       setProductHoldings((current) => [...current, purchase]);
       setProductHistory((current) => [...current, purchase]);
     }
     setProductAmounts((current) => ({ ...current, [productId]: '' }));
   };
+
+  const sellStock = (holdingId: string) => {
+    const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'stocks');
+    if (!holding) return;
+    const price = stockPrices[holding.productId] || 100;
+    const proceeds = (holding.shares || 0) * price;
+    setProductHoldings((current) => current.filter((item) => item.id !== holdingId));
+    setGame((current) => {
+      const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - holding.amount) };
+      return { ...current, portfolio, lifeStatus: `已賣出 ${holding.label.split('｜')[0]}，NT${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`, eventHistory: [...current.eventHistory, `股票賣出：${holding.label.split('｜')[0]}，實現損益 NT${roundMoney(proceeds - holding.amount).toLocaleString('en-US')}。`] };
+    });
+  };
+
+  const stockHoldings = productHoldings.filter((holding) => holding.asset === 'stocks');
+  const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+h.amount,0);
 
   const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
   const allocationAmountTotal = totalAssets * (allocationTotal / 100);
@@ -350,7 +371,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory }));
       alert('遊戲已儲存');
     }
   };
@@ -367,6 +388,21 @@ export default function Page() {
 
   const advanceYear = () => {
     if (game.pendingChoice || game.completed) return;
+
+    const nextStockPrices: Record<string, number> = { ...stockPrices };
+    Object.keys(nextStockPrices).forEach((id) => {
+      const volatility = id === 'stock-tech' ? 0.28 : id === 'stock-dividend' ? 0.14 : 0.18;
+      const annualReturn = 0.06 + (Math.random() - 0.45) * volatility;
+      nextStockPrices[id] = Math.max(20, nextStockPrices[id] * (1 + annualReturn));
+    });
+    setStockPrices(nextStockPrices);
+    setStockPriceHistory((current) => {
+      const next = { ...current };
+      Object.keys(nextStockPrices).forEach((id) => { next[id] = [...(next[id] || [100]), nextStockPrices[id]]; });
+      return next;
+    });
+    const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
+    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue}}));
 
     // Participating policies are recurring premium contracts.
     // The first entered amount becomes the fixed annual premium for the full premium term.
@@ -708,6 +744,8 @@ export default function Page() {
           </div>
         </header>
 
+        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>遊戲主畫面</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>股票市場</button></nav>
+        {mainView === 'game' ? <>
         <section className="stats-row">
           <div className="stat-card">
             <span>目前年齡</span>
@@ -877,6 +915,23 @@ export default function Page() {
           </div>
         </section>
 
+        </> : <section className="panel stock-market-page">
+          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>股票市場價格與持股明細</h2></div><span>AGE {game.age}</span></div>
+          {productCatalog.stocks.map((product) => {
+            const price=stockPrices[product.id]||100; const hist=stockPriceHistory[product.id]||[100];
+            const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
+            const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
+            return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
+              <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
+              <div className="market-years"><span>25歲</span><span>現在 {game.age}歲</span></div>
+            </div>
+          })}
+          <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
+          {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
+            <div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div>
+            <div><span>買入價</span><b>NT${(h.buyPrice||0).toFixed(2)}</b></div><div><span>持股單位</span><b>{(h.shares||0).toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
+            <button className="danger" onClick={()=>sellStock(h.id)}>全部賣出</button></div>})}
+        </section>}
         {game.pendingChoice && (
           <div className="modal-overlay">
             <div className="modal-card">
