@@ -995,6 +995,7 @@ export default function Page() {
               {annualReports.length===0 ? <p>第一個年度結束後，這裡會整理當年的經濟、利率、企業獲利、資金與市場消息。</p> :
                 <>
                   <p>{annualReports[annualReports.length-1].summary}</p>
+                  <div className="annual-report-scroll">
                   <div className="annual-report-list">
                     {[...annualReports].reverse().map((report)=><div key={report.year} className="annual-report-item">
                       <button onClick={()=>setReportOpen(reportOpen===report.year?null:report.year)}>
@@ -1005,6 +1006,7 @@ export default function Page() {
                         <div className="annual-report-summary"><b>年度摘要</b><span>{report.summary}</span></div>
                       </div>}
                     </div>)}
+                  </div>
                   </div>
                 </>}
             </div>
