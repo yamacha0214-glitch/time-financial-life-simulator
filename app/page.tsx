@@ -153,6 +153,9 @@ type HistoryEntry = {
   real: number;
   liquidity: number;
   eventTitle: string;
+  portfolio?: Portfolio;
+  returnRate?: number;
+  actions?: string[];
 };
 
 type PendingChoice = {
@@ -810,6 +813,9 @@ export default function Page() {
         real: getRealWealth(finalTotal, (1 + current.cumulativeInflation) * (1 + inflationRate) - 1),
         liquidity: getLiquidity(nextPortfolio),
         eventTitle: `第 ${current.year} 年金融年報`,
+        portfolio: nextPortfolio,
+        returnRate: (() => { const startTotal = current.history.length ? current.history[current.history.length - 1].total : sumPortfolio(current.portfolio); return startTotal > 0 ? (finalTotal - annualCapital - startTotal) / startTotal : 0; })(),
+        actions: nextEventHistory.slice(current.history.length ? current.eventHistory.lastIndexOf(current.history[current.history.length - 1].eventTitle) + 1 : 0).filter((x) => !x.includes('金融年報：')),
       };
 
       const newHistory = [...current.history, nextHistory];
@@ -1185,19 +1191,20 @@ export default function Page() {
               <div className="panel-header compact">
                 <h2>歷史紀錄</h2>
               </div>
-              <ul className="history-list">
-                {game.history.length === 0 ? (
-                  <li>還沒有歷史紀錄，第一年即將開始。</li>
-                ) : (
-                  [...game.history].slice(-5).reverse().map((item, idx) => (
-                    <li key={`${item.year}-${idx}`}>
-                      <strong>{item.age}歲</strong>
-                      <span>{item.eventTitle}</span>
-                      <em>NT${roundMoney(item.total).toLocaleString('en-US')}</em>
-                    </li>
-                  ))
-                )}
-              </ul>
+              {game.history.length === 0 ? <p>還沒有歷史紀錄，第一年即將開始。</p> : (() => {
+                const selectedYear = reportOpen ?? game.history[game.history.length - 1].year;
+                const item = game.history.find((x) => x.year === selectedYear) ?? game.history[game.history.length - 1];
+                const p = item.portfolio;
+                return <>
+                  <div className="history-year-picker"><select aria-label="歷史紀錄年度" value={item.year} onChange={(e)=>setReportOpen(Number(e.target.value))}>{[...game.history].reverse().map((x)=><option key={x.year} value={x.year}>{'第 '+x.year+' 年｜'+x.age+'歲　　　　　　　　 NT$'+roundMoney(x.total).toLocaleString('en-US')}</option>)}</select></div>
+                  <div className="history-detail-block">
+                    <div className="history-detail-head"><strong>第 {item.year} 年｜{item.age}歲</strong><b>總資產 NT{roundMoney(item.total).toLocaleString('en-US')}</b></div>
+                    <div className="history-return"><span>年度投資報酬率</span><strong>{item.returnRate == null ? '舊紀錄未保存' : (item.returnRate >= 0 ? '+' : '')+(item.returnRate*100).toFixed(1)+'%'}</strong></div>
+                    <div className="history-assets">{p ? Object.entries({現金:p.cash,定存:p.deposit,債券:p.bonds,股票:p.stocks,房地產:p.realEstate,長期保險:p.insurance}).map(([label,value])=><div key={label}><span>{label}</span><strong>NT{roundMoney(value).toLocaleString('en-US')}</strong></div>) : <p>這筆舊紀錄沒有保存各資產餘額；新年度開始後會自動記錄。</p>}</div>
+                    <div className="history-actions"><b>當年度操作</b>{item.actions?.length ? item.actions.map((x,i)=><p key={i}>{x}</p>) : <p>這個年度沒有可顯示的操作紀錄。</p>}</div>
+                  </div>
+                </>;
+              })()}
             </div>
           </div>
         </section>
