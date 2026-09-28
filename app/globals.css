@@ -15,3 +15,10 @@
 .holdings-strip::-webkit-scrollbar-track{background:#111d2d;border-radius:999px}
 .holdings-strip::-webkit-scrollbar-thumb{background:#60718a;border-radius:999px}
 .holding-chip{flex:0 0 210px;scroll-snap-align:start}
+
+/* V2 holdings viewport: cards never widen the page; only this rail scrolls. */
+.holdings-status{width:100%;max-width:100%;min-width:0;box-sizing:border-box}
+.holdings-status .panel-header{min-width:0}
+.holdings-strip{width:100%;max-width:100%;min-width:0;box-sizing:border-box;overscroll-behavior-x:contain}
+.holding-chip{width:210px;min-width:210px;max-width:210px;box-sizing:border-box;overflow:hidden}
+.holding-chip strong,.holding-chip span,.holding-chip small{max-width:100%;overflow-wrap:anywhere}
