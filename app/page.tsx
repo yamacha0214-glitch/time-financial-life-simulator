@@ -1327,6 +1327,7 @@ export default function Page() {
                     <div className="history-popup-total"><span>年度總資產</span><strong>NT${roundMoney(item.total).toLocaleString('en-US')}</strong></div>
                     <div className="history-return"><span>年度投資報酬率</span><strong>{item.returnRate == null ? '舊紀錄未保存' : (item.returnRate >= 0 ? '+' : '')+(item.returnRate*100).toFixed(1)+'%'}</strong></div>
                     <div className="history-assets">{p ? Object.entries({現金:p.cash,定存:p.deposit,債券:p.bonds,股票:p.stocks,房地產:p.realEstate,長期保險:p.insurance}).map(([label,value])=><div key={label}><span>{label}</span><strong>NT${roundMoney(value).toLocaleString('en-US')}</strong></div>) : <p>這筆舊紀錄沒有保存各資產餘額；新年度開始後會自動記錄。</p>}</div>
+                    <div className="history-actions"><b>本年度資產變化</b>{item.changes?.length ? item.changes.map((x,i)=><p key={i}>{x}</p>) : <p>這筆舊紀錄沒有保存資產變化。</p>}</div>
                     <div className="history-actions"><b>當年度操作</b>{item.actions?.length ? item.actions.map((x,i)=><p key={i}>{x}</p>) : <p>這個年度沒有可顯示的操作紀錄。</p>}</div>
                   </div>})}><span>第 {item.year} 年資產紀錄</span><b>查看詳情 →</b></button>
                 </>;
