@@ -7,18 +7,42 @@ const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
-const MARKET_MODEL_VERSION = 3;
+const MARKET_MODEL_VERSION = 4;
+
+type MarketSignals = {
+  growth: number; inflation: number; policyRate: number; riskAppetite: number;
+  earnings: number; flows: number; news: number; creditSpread: number;
+};
+
+const buildMarketSignals = (): MarketSignals => ({
+  growth: -0.01 + Math.random()*0.055,
+  inflation: 0.012 + Math.random()*0.045,
+  policyRate: 0.01 + Math.random()*0.05,
+  riskAppetite: -1 + Math.random()*2,
+  earnings: -0.08 + Math.random()*0.24,
+  flows: -1 + Math.random()*2,
+  news: -1 + Math.random()*2,
+  creditSpread: 0.006 + Math.random()*0.035,
+});
+
+const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
+
 
 const buildPreGameMarket = () => {
   const stockPrices: Record<string, number> = {};
   const stockPriceHistory: Record<string, number[]> = {};
   Object.entries(STOCK_INITIAL_PRICES).forEach(([id, base]) => {
-    const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12 } : { drift: 0.07, vol: 0.16 };
+    const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24, fundamental: 1.35, flow: 1.15 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12, fundamental: 0.75, flow: 0.7 } : { drift: 0.07, vol: 0.16, fundamental: 1.0, flow: 0.9 };
+      const fundamentalImpact = (signals.growth*0.9 + signals.earnings*0.55 - Math.max(0,signals.policyRate-0.025)*0.8) * profile.fundamental;
+      const flowImpact = signals.flows * 0.035 * profile.flow;
+      const newsImpact = signals.news * 0.045;
+      const sentimentImpact = signals.riskAppetite * 0.03;
+      const signalDrift = profile.drift + fundamentalImpact + flowImpact + newsImpact + sentimentImpact;
     let price = base;
     const path = [price];
     for (let month = 0; month < 12; month++) {
       const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
-      price = Math.max(5, price * (1 + profile.drift/12 + shock));
+      price = Math.max(5, price * (1 + signalDrift/12 + shock));
       path.push(price);
     }
     stockPrices[id] = price;
@@ -28,7 +52,7 @@ const buildPreGameMarket = () => {
   const bondPrices: Record<string, number> = {};
   Object.entries(BOND_INITIAL_PRICES).forEach(([id, base]) => {
     const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
-    const creditShock = id === 'bond-corp' ? (Math.random()-0.5)*0.035 : 0;
+    const creditShock = id === 'bond-corp' ? -(signals.creditSpread-marketSignals.creditSpread)*2.4 + signals.news*0.012 : signals.news*0.003;
     bondPrices[id] = clamp(base * (1-duration*rateShock+creditShock),65,125);
   });
   return { stockPrices, stockPriceHistory, bondPrices };
@@ -296,6 +320,7 @@ export default function Page() {
   const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
   const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
+  const [marketSignals, setMarketSignals] = useState<MarketSignals>(buildMarketSignals);
 
   useEffect(() => {
     setIsMounted(true);
@@ -313,6 +338,7 @@ export default function Page() {
           if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
           if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
           if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
+          if (parsed.marketSignals) setMarketSignals(parsed.marketSignals);
         } else {
           // Migrate old preview saves that used the obsolete all-100 market model.
           const migratedMarket = buildPreGameMarket();
@@ -331,8 +357,8 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketModelVersion: MARKET_MODEL_VERSION }));
-  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, isMounted]);
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, marketModelVersion: MARKET_MODEL_VERSION }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -454,7 +480,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketModelVersion: MARKET_MODEL_VERSION }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, marketModelVersion: MARKET_MODEL_VERSION }));
       alert('遊戲已儲存');
     }
   };
@@ -472,6 +498,8 @@ export default function Page() {
   const advanceYear = () => {
     if (game.pendingChoice || game.completed) return;
 
+    const signals = buildMarketSignals();
+    setMarketSignals(signals);
     const nextStockPrices: Record<string, number> = { ...stockPrices };
     const newMonthlyPaths: Record<string, number[]> = {};
     Object.keys(nextStockPrices).forEach((id) => {
@@ -494,7 +522,7 @@ export default function Page() {
     });
 
     // Bond quotes are per 100 face value. Rates up => prices down; longer duration moves more.
-    const rateShock = (Math.random() - 0.5) * 0.018;
+    const rateShock = (signals.policyRate - marketSignals.policyRate) + (signals.inflation-marketSignals.inflation)*0.35;
     const nextBondPrices:Record<string,number> = {...bondPrices};
     Object.keys(nextBondPrices).forEach((id)=>{
       const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
@@ -965,6 +993,14 @@ export default function Page() {
 
         </> : <section className="panel stock-market-page">
           <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>股票市場價格與持股明細</h2></div><span>AGE {game.age}</span></div>
+          <div className="signal-dashboard">
+            <div><span>總體景氣</span><b>{marketSignals.growth>0.025?'擴張':marketSignals.growth<0.008?'疲弱':'溫和'}</b><small>成長 {(marketSignals.growth*100).toFixed(1)}%</small></div>
+            <div><span>通膨 / 利率</span><b>{(marketSignals.inflation*100).toFixed(1)}% / {(marketSignals.policyRate*100).toFixed(1)}%</b><small>影響估值與債券 Duration</small></div>
+            <div><span>企業基本面</span><b>{marketSignals.earnings>=0?'+':''}{(marketSignals.earnings*100).toFixed(1)}%</b><small>模擬獲利成長</small></div>
+            <div><span>籌碼面</span><b>{signalLabel(marketSignals.flows,'資金流入','資金流出')}</b><small>機構與基金資金流</small></div>
+            <div><span>消息面</span><b>{signalLabel(marketSignals.news,'偏正面','偏負面')}</b><small>政策、產業與信用消息</small></div>
+            <div><span>風險偏好</span><b>{signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</b><small>影響成長型資產估值</small></div>
+          </div>
           {productCatalog.stocks.map((product) => {
             const price=stockPrices[product.id]||100; const hist=stockPriceHistory[product.id]||[100];
             const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
@@ -972,10 +1008,11 @@ export default function Page() {
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
               <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
               <div className="market-years"><span>遊戲開始前 1 年</span><span>現在 {game.age}歲</span></div>
+              <div className="research-grid"><span>基本面 <b>{marketSignals.earnings>0.08?'獲利強勁':marketSignals.earnings<0?'獲利承壓':'穩定'}</b></span><span>籌碼面 <b>{signalLabel(marketSignals.flows,'流入','流出')}</b></span><span>消息面 <b>{signalLabel(marketSignals.news,'正面','負面')}</b></span><span>技術面 <b>{hist.length>2 && price>hist[Math.max(0,hist.length-7)]?'趨勢偏強':'趨勢偏弱'}</b></span></div>
             </div>
           })}
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
-          {productCatalog.bonds.map((product)=><div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div></div>)}
+          {productCatalog.bonds.map((product)=><div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-grid"><span>基本面 <b>{marketSignals.growth>0.02?'景氣穩定':'景氣轉弱'}</b></span><span>籌碼面 <b>{signalLabel(-marketSignals.riskAppetite,'避險需求↑','避險需求↓')}</b></span><span>消息面 <b>{signalLabel(marketSignals.news,'正面','負面')}</b></span><span>利率面 <b>{marketSignals.policyRate>0.035?'高利率':'中低利率'}</b></span></div></div>)}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockHoldings.length} 筆</span></div>
           {stockHoldings.length===0?<p>目前沒有持股。</p>:stockHoldings.map(h=>{const price=stockPrices[h.productId]||100;const value=(h.shares||0)*price;const pnl=value-h.amount;return <div className="stock-statement" key={h.id}>
