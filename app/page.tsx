@@ -777,12 +777,19 @@ export default function Page() {
     setMarketSnapshots((current)=>[...current,{year:game.year,age:game.age,signals,stockPrices:nextStockPrices,stockPaths:newMonthlyPaths,bondPrices:nextBondPrices}]);
 
     const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
+    // Distributing ETFs: dividends are cash income, separate from market-price appreciation.
+    const stockDividendRates:Record<string,number>={'stock-world':0.020,'stock-tech':0.008,'stock-dividend':0.040};
+    const stockDividends=productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>{
+      const shares=h.shares||0;
+      const referencePrice=stockPrices[h.productId]||h.buyPrice||100;
+      return sum+shares*referencePrice*(stockDividendRates[h.productId]||0);
+    },0);
     const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
     const bondCoupons = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(h.couponRate||0),0);
     const maturingBonds = productHoldings.filter((h)=>h.asset==='bonds' && h.maturityYears && game.age+1 >= h.boughtAge+h.maturityYears);
     const maturedFace = maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000),0);
     if (maturingBonds.length) setProductHoldings((current)=>current.filter((h)=>!maturingBonds.some((m)=>m.id===h.id)));
-    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace}, eventHistory:[...current.eventHistory, ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
+    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace+stockDividends}, eventHistory:[...current.eventHistory, ...(stockDividends>0?[`股票配息：NT${roundMoney(stockDividends).toLocaleString('en-US')} 已進入現金。`]:[]), ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
 
     // Real estate: price, mortgage and rental results are simulated once per year.
     let propertyCashFlow=0;
@@ -883,7 +890,7 @@ export default function Page() {
       // Living costs and salary management stay outside the game; the player simply receives
       // NT$300,000 of fresh investable capital each year.
       const annualCapital = 300000;
-      nextPortfolio.cash += bondCoupons + maturedFace + propertyCashFlow + annualCapital + scheduledInsuranceCash;
+      nextPortfolio.cash += stockDividends + bondCoupons + maturedFace + propertyCashFlow + annualCapital + scheduledInsuranceCash;
 
       const report = buildAnnualReport(current.year, current.age, signals);
       const nextLifeStatus = report.summary;
