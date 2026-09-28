@@ -358,6 +358,7 @@ export default function Page() {
   const [marketSnapshots, setMarketSnapshots] = useState<MarketSnapshot[]>([{year:0,age:24,signals:initialMarket.signals,stockPrices:initialMarket.stockPrices,stockPaths:initialMarket.stockPriceHistory,bondPrices:initialMarket.bondPrices}]);
   const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
+  const [chartHover, setChartHover] = useState<{id:string; index:number} | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
     else setResearchOverlay({key,title,body});
@@ -1091,7 +1092,11 @@ export default function Page() {
             const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
             const research=stockResearch(product.id,selectedSignals,hist);
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
-              <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
+              <div className="interactive-chart" onPointerMove={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(hist.length-1))})}} onPointerLeave={()=>setChartHover(null)} onPointerDown={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(hist.length-1))})}}>
+                <div className="chart-y-axis"><span>NT${max.toFixed(0)}</span><span>NT${((max+min)/2).toFixed(0)}</span><span>NT${min.toFixed(0)}</span></div>
+                <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/>{chartHover?.id===product.id&&<line className="chart-crosshair" x1={(chartHover.index/Math.max(1,hist.length-1))*100} x2={(chartHover.index/Math.max(1,hist.length-1))*100} y1="0" y2="100"/>}</svg>
+                {chartHover?.id===product.id&&(()=>{const i=clamp(chartHover.index,0,hist.length-1);const v=hist[i];const monthIndex=selectedMarketYear===0?i:i+1;const label=selectedMarketYear===0?`遊戲開始前 ${12-i} 個月`:`${selectedMarket.age}歲 · 第 ${monthIndex} 月`;return <div className="chart-tooltip" style={{left:`${clamp((i/Math.max(1,hist.length-1))*100,12,82)}%`}}><strong>{label}</strong><span>NT${v.toFixed(2)}</span></div>})()}
+              </div>
               <div className="market-years"><span>{selectedMarketYear===0?'遊戲開始前 1 年':`${selectedMarket.age}歲年初`}</span><span>{selectedMarketYear===0?'24歲｜遊戲開始前':`${selectedMarket.age}歲年末`}</span></div>
               <div className="research-tabs">
                 {[
