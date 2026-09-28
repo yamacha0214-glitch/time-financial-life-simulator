@@ -1056,7 +1056,16 @@ export default function Page() {
                       </div>)}
                     </div>}
                     <div className="shop-label">可購買商品</div>
-                    {productCatalog[asset].map((product) => (
+                    {asset === 'realEstate' && <div className="property-shop">
+                    <div className="shop-label">本年度市場釋出物件</div>
+                    {propertyListings.length===0?<p>本年度暫無合適物件釋出。</p>:propertyListings.map(p=><div className="shop-product-card" key={p.id}>
+                    <strong>{p.name}｜{p.district}</strong>
+                    <small>{p.ping.toFixed(1)} 坪 · 每坪 NT${roundMoney(p.price/p.ping).toLocaleString('en-US')} · 總價 NT${p.price.toLocaleString('en-US')}</small>
+                    <small>頭期 20%：NT${roundMoney(p.price*p.downPaymentRate).toLocaleString('en-US')} · 房貸 {(p.mortgageRate*100).toFixed(2)}% · 30年</small>
+                    <small>人口 {p.populationTrend>=0?'↑':'↓'} {(Math.abs(p.populationTrend)*100).toFixed(1)}% · 出生率 {(p.birthRate*100).toFixed(2)}% · 買氣 {p.demand>.8?'強':p.demand>.68?'中等':'偏弱'} · 市場月租約 NT${p.marketRent.toLocaleString('en-US')}</small>
+                    <button onClick={()=>buyProperty(p)}>支付頭期並買入</button>
+                    </div>)}
+                    </div>} {productCatalog[asset].map((product) => (
                       <div className="shop-product-card" key={product.id}>
                         <strong>{product.label}</strong>
                         <div className="shop-buy-row">
@@ -1195,6 +1204,9 @@ export default function Page() {
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
+          <div className="panel-header"><h2>房地產市場與我的房產</h2><span>{propertyHoldings.length} 間持有</span></div>
+          {propertyListings.map(p=><div className="market-card" key={"market-"+p.id}><div className="market-quote"><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)} 坪</small></div><b>NT${(p.price/10000).toFixed(0)}萬</b></div><p>每坪 NT${roundMoney(p.price/p.ping).toLocaleString("en-US")} · 頭期 NT${roundMoney(p.price*p.downPaymentRate).toLocaleString("en-US")} · 房貸 {(p.mortgageRate*100).toFixed(2)}%</p><p>人口 {p.populationTrend>=0?"↑":"↓"} · 出生率 {(p.birthRate*100).toFixed(2)}% · 買氣 {p.demand>.8?"強":p.demand>.68?"中等":"偏弱"} · 市場租金約 NT${p.marketRent.toLocaleString("en-US")}/月</p></div>)}
+          {propertyHoldings.map(p=>{const equity=Math.max(0,p.currentValue-p.mortgageBalance);return <div className="stock-statement" key={"owned-"+p.id}><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)}坪 · {p.boughtAge}歲購入</small></div><div><span>目前估值</span><b>NT${roundMoney(p.currentValue).toLocaleString("en-US")}</b></div><div><span>剩餘房貸</span><b>NT${roundMoney(p.mortgageBalance).toLocaleString("en-US")}</b></div><div><span>房屋淨值</span><b>NT${roundMoney(equity).toLocaleString("en-US")}</b></div><div><span>上年度出租結果</span><b>{p.rentalMode==="rent"?p.lastRentedMonths+"/12 個月":"未出租"}</b><small>{p.lastRentalIncome>0?"租金 NT$"+roundMoney(p.lastRentalIncome).toLocaleString("en-US")+" 已回到現金":""}</small></div><div className="stock-sell-order"><label className="money-input-wrap"><span>月租</span><input inputMode="numeric" value={rentInputs[p.id]??String(roundMoney(p.monthlyRent))} onChange={e=>setRentInputs(x=>({...x,[p.id]:e.target.value.replace(/[^0-9]/g,"")}))}/></label><small>市場行情約 NT${p.marketRent.toLocaleString("en-US")}/月</small></div><button onClick={()=>setPropertyRental(p.id,"rent")}>設定出租</button><button onClick={()=>setPropertyRental(p.id,"vacant")}>暫不出租</button><button className="danger" onClick={()=>sellProperty(p.id)}>出售房產</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockPositions.length} 檔</span></div>
           {stockPositions.length===0?<p>目前沒有持股。</p>:stockPositions.map(pos=>{const price=stockPrices[pos.product.id]||100;const value=pos.shares*price;const pnl=value-pos.cost;return <div className="stock-statement" key={'position-'+pos.product.id}>
             <div><strong>{pos.product.label.split('｜')[0]}</strong><small>{pos.lots.length} 筆買入紀錄 · 平均成本</small></div>
