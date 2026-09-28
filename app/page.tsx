@@ -914,6 +914,16 @@ export default function Page() {
 
       const finalTotal = sumPortfolio(nextPortfolio);
       const nextAge = current.age + 1;
+      const cashDelta = nextPortfolio.cash - current.portfolio.cash;
+      const rentIncome = nextProperties.reduce((sum, property) => sum + property.lastRentalIncome, 0);
+      const annualChanges = [
+        `現金｜期末 NT${roundMoney(nextPortfolio.cash).toLocaleString('en-US')}｜較年初 ${cashDelta >= 0 ? '+' : '-'}NT${roundMoney(Math.abs(cashDelta)).toLocaleString('en-US')}`,
+        `定存｜期末 NT${roundMoney(nextPortfolio.deposit).toLocaleString('en-US')}｜持有 ${productHoldings.filter((holding) => holding.asset === 'deposit').length} 筆`,
+        `債券｜期末市值 NT${roundMoney(nextPortfolio.bonds).toLocaleString('en-US')}｜本年票息 NT${roundMoney(bondCoupons).toLocaleString('en-US')}`,
+        `股票｜期末市值 NT${roundMoney(nextPortfolio.stocks).toLocaleString('en-US')}｜本年現金股息 NT${roundMoney(stockDividends).toLocaleString('en-US')}`,
+        `房地產｜期末淨值 NT${roundMoney(nextPortfolio.realEstate).toLocaleString('en-US')}｜本年租金收入 NT${roundMoney(rentIncome).toLocaleString('en-US')}`,
+        `長期保險｜期末退保價值 NT${roundMoney(nextPortfolio.insurance).toLocaleString('en-US')}｜達成率 ${(insuranceFulfillment(signals) * 100).toFixed(1)}%`,
+      ];
       const nextHistory: HistoryEntry = {
         year: current.year,
         age: current.age,
@@ -926,7 +936,7 @@ export default function Page() {
         // Only operations created during this advanceYear belong to this year's history.
         // eventHistory is cumulative, so use its pre-year length as the boundary.
         actions: nextEventHistory.slice(current.eventHistory.length).filter((x) => !x.includes('金融年報：')),
-        changes: [],
+        changes: annualChanges,
       };
 
       const newHistory = [...current.history, nextHistory];
