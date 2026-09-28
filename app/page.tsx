@@ -355,7 +355,7 @@ export default function Page() {
       };
 
       let assetsAfterMarket: Portfolio = { ...rebalanced };
-      (ASSET_KEYS as AssetKey[]).forEach((key) => {
+      ASSET_KEYS.forEach((key) => {
         const modifier = marketEvent.effect[key] ?? 0;
         assetsAfterMarket[key] = rebalanced[key] * (1 + baseReturns[key] + modifier);
       });
