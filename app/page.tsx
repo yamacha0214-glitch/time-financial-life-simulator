@@ -27,22 +27,31 @@ const buildMarketSignals = (): MarketSignals => ({
 
 const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
 const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
+const stableNoise = (key:string, scale=1) => {
+  let h=2166136261;
+  for(let i=0;i<key.length;i++){h^=key.charCodeAt(i);h=Math.imul(h,16777619)}
+  return ((((h>>>0)%10000)/9999)*2-1)*scale;
+};
 const stockResearch = (id:string, signals:MarketSignals, hist:number[]) => {
   const techBias = id === 'stock-tech' ? 0.06 : id === 'stock-dividend' ? -0.025 : 0;
   const dividendBias = id === 'stock-dividend' ? 0.06 : 0;
-  const fundamental = signals.earnings + signals.growth*1.4 - signals.policyRate*0.45 + techBias + productNoise(0.18);
-  const flow = signals.flows*0.55 + signals.riskAppetite*(id==='stock-tech'?0.35:0.18) + productNoise(0.65);
-  const news = signals.news*0.45 + dividendBias + productNoise(0.8);
+  const seed=id+'|'+signals.growth.toFixed(4)+'|'+signals.inflation.toFixed(4)+'|'+signals.policyRate.toFixed(4)+'|'+signals.earnings.toFixed(4)+'|'+signals.flows.toFixed(4)+'|'+signals.news.toFixed(4)+'|'+signals.riskAppetite.toFixed(4)+'|'+hist.length;
+  const fundamental = signals.earnings + signals.growth*1.4 - signals.policyRate*0.45 + techBias + stableNoise(seed+'|fundamental',0.18);
+  const flow = signals.flows*0.55 + signals.riskAppetite*(id==='stock-tech'?0.35:0.18) + stableNoise(seed+'|flow',0.65);
+  const news = signals.news*0.45 + dividendBias + stableNoise(seed+'|news',0.8);
   const recent = hist.length>2 ? hist[hist.length-1]/hist[Math.max(0,hist.length-7)]-1 : 0;
-  const technical = recent*4 + productNoise(0.55);
+  const technical = recent*4 + stableNoise(seed+'|technical',0.55);
   return {fundamental,flow,news,technical};
 };
-const bondResearch = (id:string, signals:MarketSignals) => ({
-  fundamental: (id==='bond-corp'?signals.growth*3-signals.creditSpread*4: -signals.inflation*1.2) + productNoise(0.25),
-  flow: -signals.riskAppetite*0.45 + productNoise(0.65),
-  news: signals.news*(id==='bond-corp'?0.6:0.25)+productNoise(0.65),
-  rate: (0.035-signals.policyRate)*12 + productNoise(0.25),
-});
+const bondResearch = (id:string, signals:MarketSignals) => {
+  const seed=id+'|'+signals.growth.toFixed(4)+'|'+signals.inflation.toFixed(4)+'|'+signals.policyRate.toFixed(4)+'|'+signals.news.toFixed(4)+'|'+signals.riskAppetite.toFixed(4)+'|'+signals.creditSpread.toFixed(4);
+  return {
+    fundamental:(id==='bond-corp'?signals.growth*3-signals.creditSpread*4:-signals.inflation*1.2)+stableNoise(seed+'|fundamental',0.25),
+    flow:-signals.riskAppetite*0.45+stableNoise(seed+'|flow',0.65),
+    news:signals.news*(id==='bond-corp'?0.6:0.25)+stableNoise(seed+'|news',0.65),
+    rate:(0.035-signals.policyRate)*12+stableNoise(seed+'|rate',0.25),
+  };
+};
 
 
 const buildPreGameMarket = () => {
