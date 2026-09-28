@@ -5,6 +5,10 @@ import { useEffect, useMemo, useState } from 'react';
 const STORAGE_KEY = 'time-financial-life-simulator-v2';
 const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
+const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
+const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
+const MARKET_MODEL_VERSION = 2;
+
 type AssetKey = (typeof ASSET_KEYS)[number];
 type Portfolio = Record<AssetKey, number>;
 type Allocation = Record<AssetKey, number>;
@@ -261,10 +265,10 @@ export default function Page() {
   const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
   const [mainView, setMainView] = useState<'game' | 'market'>('game');
-  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 });
+  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ ...STOCK_INITIAL_PRICES });
   const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
   const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
-  const [bondPrices, setBondPrices] = useState<Record<string, number>>({ 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 });
+  const [bondPrices, setBondPrices] = useState<Record<string, number>>({ ...BOND_INITIAL_PRICES });
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -279,9 +283,16 @@ export default function Page() {
         const parsed = JSON.parse(savedProducts);
         if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
-        if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
-        if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
-        if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
+        if (parsed.marketModelVersion === MARKET_MODEL_VERSION) {
+          if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
+          if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
+          if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
+        } else {
+          // Migrate old preview saves that used the obsolete all-100 market model.
+          setStockPrices({ ...STOCK_INITIAL_PRICES });
+          setStockPriceHistory({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
+          setBondPrices({ ...BOND_INITIAL_PRICES });
+        }
       }
     } catch {}
   }, []);
@@ -293,7 +304,7 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices }));
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketModelVersion: MARKET_MODEL_VERSION }));
   }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
@@ -401,6 +412,11 @@ export default function Page() {
     setGame(fresh);
     setProductHoldings([]);
     setProductHistory([]);
+    setStockPrices({ ...STOCK_INITIAL_PRICES });
+    setStockPriceHistory({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
+    setBondPrices({ ...BOND_INITIAL_PRICES });
+    setStockTradeShares({});
+    setBondTradeUnits({});
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
       window.localStorage.removeItem(HOLDINGS_KEY);
@@ -410,7 +426,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketModelVersion: MARKET_MODEL_VERSION }));
       alert('遊戲已儲存');
     }
   };
