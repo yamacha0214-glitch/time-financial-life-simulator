@@ -7,7 +7,32 @@ const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
-const MARKET_MODEL_VERSION = 2;
+const MARKET_MODEL_VERSION = 3;
+
+const buildPreGameMarket = () => {
+  const stockPrices: Record<string, number> = {};
+  const stockPriceHistory: Record<string, number[]> = {};
+  Object.entries(STOCK_INITIAL_PRICES).forEach(([id, base]) => {
+    const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12 } : { drift: 0.07, vol: 0.16 };
+    let price = base;
+    const path = [price];
+    for (let month = 0; month < 12; month++) {
+      const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
+      price = Math.max(5, price * (1 + profile.drift/12 + shock));
+      path.push(price);
+    }
+    stockPrices[id] = price;
+    stockPriceHistory[id] = path;
+  });
+  const rateShock = (Math.random()-0.5)*0.018;
+  const bondPrices: Record<string, number> = {};
+  Object.entries(BOND_INITIAL_PRICES).forEach(([id, base]) => {
+    const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
+    const creditShock = id === 'bond-corp' ? (Math.random()-0.5)*0.035 : 0;
+    bondPrices[id] = clamp(base * (1-duration*rateShock+creditShock),65,125);
+  });
+  return { stockPrices, stockPriceHistory, bondPrices };
+};
 
 type AssetKey = (typeof ASSET_KEYS)[number];
 type Portfolio = Record<AssetKey, number>;
@@ -265,10 +290,11 @@ export default function Page() {
   const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
   const [mainView, setMainView] = useState<'game' | 'market'>('game');
-  const [stockPrices, setStockPrices] = useState<Record<string, number>>({ ...STOCK_INITIAL_PRICES });
-  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
+  const [initialMarket] = useState(buildPreGameMarket);
+  const [stockPrices, setStockPrices] = useState<Record<string, number>>(initialMarket.stockPrices);
+  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>(initialMarket.stockPriceHistory);
   const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
-  const [bondPrices, setBondPrices] = useState<Record<string, number>>({ ...BOND_INITIAL_PRICES });
+  const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -289,9 +315,10 @@ export default function Page() {
           if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
         } else {
           // Migrate old preview saves that used the obsolete all-100 market model.
-          setStockPrices({ ...STOCK_INITIAL_PRICES });
-          setStockPriceHistory({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
-          setBondPrices({ ...BOND_INITIAL_PRICES });
+          const migratedMarket = buildPreGameMarket();
+          setStockPrices(migratedMarket.stockPrices);
+          setStockPriceHistory(migratedMarket.stockPriceHistory);
+          setBondPrices(migratedMarket.bondPrices);
         }
       }
     } catch {}
@@ -412,9 +439,10 @@ export default function Page() {
     setGame(fresh);
     setProductHoldings([]);
     setProductHistory([]);
-    setStockPrices({ ...STOCK_INITIAL_PRICES });
-    setStockPriceHistory({ 'stock-world': [160], 'stock-tech': [740], 'stock-dividend': [165] });
-    setBondPrices({ ...BOND_INITIAL_PRICES });
+    const restartedMarket = buildPreGameMarket();
+    setStockPrices(restartedMarket.stockPrices);
+    setStockPriceHistory(restartedMarket.stockPriceHistory);
+    setBondPrices(restartedMarket.bondPrices);
     setStockTradeShares({});
     setBondTradeUnits({});
     if (typeof window !== 'undefined') {
@@ -943,7 +971,7 @@ export default function Page() {
             const points=hist.map((v,i)=>`${hist.length===1?0:(i/(hist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
             return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
               <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/></svg>
-              <div className="market-years"><span>25歲</span><span>現在 {game.age}歲</span></div>
+              <div className="market-years"><span>遊戲開始前 1 年</span><span>現在 {game.age}歲</span></div>
             </div>
           })}
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
