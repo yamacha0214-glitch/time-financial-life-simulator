@@ -776,14 +776,28 @@ export default function Page() {
     setBondPrices(nextBondPrices);
     setMarketSnapshots((current)=>[...current,{year:game.year,age:game.age,signals,stockPrices:nextStockPrices,stockPaths:newMonthlyPaths,bondPrices:nextBondPrices}]);
 
+    // Distributing ETFs: payout varies with earnings / macro conditions, then NAV drops by the cash distribution per share.
+    const baseDividendRates:Record<string,number>={'stock-world':0.020,'stock-tech':0.008,'stock-dividend':0.040};
+    const dividendGrowthFactor=clamp(1+signals.earnings*0.55+signals.growth*1.2+signals.news*0.025,0.72,1.18);
+    const dividendPerShare:Record<string,number>={};
+    Object.keys(nextStockPrices).forEach((id)=>{
+      const referencePrice=stockPrices[id]||nextStockPrices[id]||100;
+      const payoutRate=baseDividendRates[id]||0;
+      const cashDistribution=Math.max(0,referencePrice*payoutRate*dividendGrowthFactor);
+      dividendPerShare[id]=cashDistribution;
+      nextStockPrices[id]=Math.max(1,nextStockPrices[id]-cashDistribution);
+      const path=newMonthlyPaths[id];
+      if(path?.length)path[path.length-1]=nextStockPrices[id];
+    });
+    // Re-save post-distribution prices so charts and holdings use ex-dividend NAV.
+    setStockPrices(nextStockPrices);
+    setStockPriceHistory((current)=>{
+      const next={...current};
+      Object.keys(nextStockPrices).forEach((id)=>{const existing=next[id]||[stockPrices[id]];next[id]=[...existing.slice(0,Math.max(1,existing.length-12)),...(newMonthlyPaths[id]||[])];});
+      return next;
+    });
+    const stockDividends=productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(dividendPerShare[h.productId]||0),0);
     const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
-    // Distributing ETFs: dividends are cash income, separate from market-price appreciation.
-    const stockDividendRates:Record<string,number>={'stock-world':0.020,'stock-tech':0.008,'stock-dividend':0.040};
-    const stockDividends=productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>{
-      const shares=h.shares||0;
-      const referencePrice=stockPrices[h.productId]||h.buyPrice||100;
-      return sum+shares*referencePrice*(stockDividendRates[h.productId]||0);
-    },0);
     const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
     const bondCoupons = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(h.couponRate||0),0);
     const maturingBonds = productHoldings.filter((h)=>h.asset==='bonds' && h.maturityYears && game.age+1 >= h.boughtAge+h.maturityYears);
