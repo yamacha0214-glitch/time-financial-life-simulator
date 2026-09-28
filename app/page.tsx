@@ -7,7 +7,9 @@ const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
-const MARKET_MODEL_VERSION = 4;
+const MARKET_MODEL_VERSION = 5;
+
+type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string };
 
 type MarketSignals = {
   growth: number; inflation: number; policyRate: number; riskAppetite: number;
@@ -24,6 +26,19 @@ const buildMarketSignals = (): MarketSignals => ({
   news: -1 + Math.random()*2,
   creditSpread: 0.006 + Math.random()*0.035,
 });
+
+const buildAnnualReport = (year:number, age:number, x:MarketSignals):AnnualReport => {
+  const events=[
+    {label:'總體經濟',text:`經濟成長 ${(x.growth*100).toFixed(1)}%，景氣${x.growth>0.025?'偏強':x.growth<0.008?'偏弱':'溫和'}。`},
+    {label:'物價環境',text:`通膨率 ${(x.inflation*100).toFixed(1)}%，${x.inflation>0.04?'物價壓力明顯':'物價壓力相對溫和'}。`},
+    {label:'央行政策',text:`政策利率 ${(x.policyRate*100).toFixed(1)}%，${x.policyRate>0.04?'資金成本偏高':'資金成本相對溫和'}。`},
+    {label:'企業獲利',text:`企業獲利成長 ${x.earnings>=0?'+':''}${(x.earnings*100).toFixed(1)}%，${x.earnings>=0?'企業獲利整體成長':'企業獲利整體衰退'}。`},
+    {label:'市場資金',text:`${signalLabel(x.flows,'資金偏流入','資金偏流出')}，市場風險偏好為 ${signalLabel(x.riskAppetite,'偏高','偏低')}。`},
+    {label:'市場消息',text:`政策、產業與信用消息整體${signalLabel(x.news,'偏正面','偏負面')}，信用利差 ${(x.creditSpread*100).toFixed(1)}%。`}
+  ];
+  const summary=`本年度景氣${x.growth>0.025?'較強':x.growth<0.008?'較弱':'溫和'}、通膨${x.inflation>0.04?'偏高':'相對穩定'}，利率${x.policyRate>0.04?'維持高檔':'壓力有限'}；企業獲利${x.earnings>=0?'成長':'轉弱'}，資金${x.flows>0.3?'偏向流入風險資產':x.flows<-0.3?'偏向撤出風險資產':'方向不明顯'}。不同訊號可能同時互相矛盾，市場價格不一定只受單一因素影響。`;
+  return {year,age,signals:x,events,summary};
+};
 
 const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
 const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
@@ -353,6 +368,8 @@ export default function Page() {
   const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
   const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
   const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
+  const [annualReports, setAnnualReports] = useState<AnnualReport[]>([]);
+  const [reportOpen, setReportOpen] = useState<number | null>(null);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
@@ -376,6 +393,7 @@ export default function Page() {
           if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
           if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
           if (parsed.marketSignals) setMarketSignals(parsed.marketSignals);
+          if (Array.isArray(parsed.annualReports)) setAnnualReports(parsed.annualReports);
         } else {
           // Migrate old preview saves that used the obsolete all-100 market model.
           const migratedMarket = buildPreGameMarket();
@@ -394,8 +412,8 @@ export default function Page() {
 
   useEffect(() => {
     if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, marketModelVersion: MARKET_MODEL_VERSION }));
-  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, isMounted]);
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketModelVersion: MARKET_MODEL_VERSION }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -517,7 +535,7 @@ export default function Page() {
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, marketModelVersion: MARKET_MODEL_VERSION }));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketModelVersion: MARKET_MODEL_VERSION }));
       alert('遊戲已儲存');
     }
   };
@@ -537,6 +555,7 @@ export default function Page() {
 
     const signals = buildMarketSignals();
     setMarketSignals(signals);
+    setAnnualReports((current)=>[...current, buildAnnualReport(game.year, game.age, signals)]);
     const nextStockPrices: Record<string, number> = { ...stockPrices };
     const newMonthlyPaths: Record<string, number[]> = {};
     Object.keys(nextStockPrices).forEach((id) => {
@@ -982,29 +1001,22 @@ export default function Page() {
 
           <div className="side-stack">
             <div className="panel event-card">
-              <div className="panel-header compact">
-                <h2>年度事件</h2>
-              </div>
-              {game.marketEvent ? (
+              <div className="panel-header compact"><h2>金融年報</h2><span>{annualReports.length} 份</span></div>
+              {annualReports.length===0 ? <p>第一個年度結束後，這裡會整理當年的經濟、利率、企業獲利、資金與市場消息。</p> :
                 <>
-                  <div className="event-year">YEAR {game.year}</div>
-                  <h3>{game.marketEvent.title}</h3>
-                  <p>{game.marketEvent.blurb}</p>
-                  <div className="mini-badges">
-                    {ASSET_KEYS.map((asset) => {
-                      const effect = game.marketEvent?.effect[asset];
-                      if (!effect) return null;
-                      return (
-                        <span key={asset} className="badge">
-                          {ASSET_META[asset].label} {effect > 0 ? '+' : ''}{(effect * 100).toFixed(0)}%
-                        </span>
-                      );
-                    })}
+                  <p>{annualReports[annualReports.length-1].summary}</p>
+                  <div className="annual-report-list">
+                    {[...annualReports].reverse().map((report)=><div key={report.year} className="annual-report-item">
+                      <button onClick={()=>setReportOpen(reportOpen===report.year?null:report.year)}>
+                        <strong>第 {report.year} 年金融年報</strong><span>{report.age}歲 {reportOpen===report.year?'收起':'查看 →'}</span>
+                      </button>
+                      {reportOpen===report.year && <div className="annual-report-detail">
+                        {report.events.map((event)=><p key={event.label}><b>{event.label}</b><span>{event.text}</span></p>)}
+                        <div className="annual-report-summary"><b>年度摘要</b><span>{report.summary}</span></div>
+                      </div>}
+                    </div>)}
                   </div>
-                </>
-              ) : (
-                <p>每年都會出現新的市場環境與人生難題。</p>
-              )}
+                </>}
             </div>
 
             <div className="panel timeline-panel">
@@ -1030,14 +1042,6 @@ export default function Page() {
 
         </> : <section className="panel stock-market-page">
           <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>AGE {game.age}</span></div>
-          <div className="signal-dashboard">
-            <div><span>總體景氣</span><b>{marketSignals.growth>0.025?'擴張':marketSignals.growth<0.008?'疲弱':'溫和'}</b><small>成長 {(marketSignals.growth*100).toFixed(1)}%</small></div>
-            <div><span>通膨 / 利率</span><b>{(marketSignals.inflation*100).toFixed(1)}% / {(marketSignals.policyRate*100).toFixed(1)}%</b><small>影響估值與債券 Duration</small></div>
-            <div><span>企業基本面</span><b>{marketSignals.earnings>=0?'+':''}{(marketSignals.earnings*100).toFixed(1)}%</b><small>模擬獲利成長</small></div>
-            <div><span>籌碼面</span><b>{signalLabel(marketSignals.flows,'資金流入','資金流出')}</b><small>機構與基金資金流</small></div>
-            <div><span>消息面</span><b>{signalLabel(marketSignals.news,'偏正面','偏負面')}</b><small>政策、產業與信用消息</small></div>
-            <div><span>風險偏好</span><b>{signalLabel(marketSignals.riskAppetite,'Risk-on','Risk-off')}</b><small>影響成長型資產估值</small></div>
-          </div>
           {productCatalog.stocks.map((product) => {
             const price=stockPrices[product.id]||100; const hist=stockPriceHistory[product.id]||[100];
             const min=Math.min(...hist), max=Math.max(...hist), range=Math.max(1,max-min);
