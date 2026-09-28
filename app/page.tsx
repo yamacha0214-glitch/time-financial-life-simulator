@@ -25,10 +25,19 @@ const insuranceCurveRatio=(policyYear:number)=>{
 // GL16 defines/discloses fulfilment ratios; GL34 requires fair/sustainable bonus governance and smoothing.
 // Neither guideline itself prescribes this numeric band.
 const insuranceFulfillment=(signals:MarketSignals)=>clamp(1+(signals.growth-0.025)*0.65-(signals.creditSpread-0.018)*0.8+signals.news*0.018,0.90,1.05);
-const policyIrr=(annualPremium:number,paid:number,value:number)=>{
-  if(paid<=0||value<=0)return null;
-  let lo=-0.99,hi=0.30;
-  for(let n=0;n<70;n++){const r=(lo+hi)/2;let npv=0;for(let y=0;y<paid;y++)npv-=annualPremium/Math.pow(1+r,y);npv+=value/Math.pow(1+r,Math.max(1,paid));if(npv>0)lo=r;else hi=r;}
+const policyIrr=(annualPremium:number,paid:number,policyYear:number,value:number,cumulativeWithdrawals=0)=>{
+  if(paid<=0||policyYear<=0||value<=0)return null;
+  // Premiums are paid annually from policy year 1; surrender value is received at the current policy year.
+  // Historical withdrawals are approximated as received at the current valuation date until yearly withdrawal cash flows are stored separately.
+  const npv=(rate:number)=>{
+    let total=0;
+    for(let payment=0;payment<paid;payment++) total-=annualPremium/Math.pow(1+rate,payment);
+    total+=(value+cumulativeWithdrawals)/Math.pow(1+rate,policyYear);
+    return total;
+  };
+  let lo=-0.99,hi=0.50;
+  if(npv(lo)*npv(hi)>0)return null;
+  for(let n=0;n<100;n++){const mid=(lo+hi)/2;if(npv(mid)>0)lo=mid;else hi=mid;}
   return (lo+hi)/2;
 };
 const insuranceSurrenderValue=(annualPremium:number,premiumTerm:number,policyYear:number,signals:MarketSignals)=>{
@@ -1234,7 +1243,7 @@ export default function Page() {
                     {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
                       <div className="shop-label">目前持有倉位</div>
                       {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
-                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceSurrenderValue(holding.amount,holding.premiumTerm,py,marketSignals),paid=holding.premiumsPaid||1,irr=policyIrr(holding.amount,paid,sv),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
+                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceSurrenderValue(holding.amount,holding.premiumTerm,py,marketSignals),paid=holding.premiumsPaid||1,irr=policyIrr(holding.amount,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
                           <div className="insurance-policy-head"><div><strong>{holding.label.split('｜')[0]}</strong><small>保單年度 第 {py} 年 · 供款 {paid}/{holding.premiumTerm} 年</small></div><b>退保價值 NT${roundMoney(sv).toLocaleString('en-US')}</b></div>
                           <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(holding.amount*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
                           <div className="insurance-withdraw"><label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="單次提取金額" value={insuranceWithdrawals[holding.id]||''} onChange={(e)=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><button onClick={()=>withdrawInsurance(holding.id)}>單次提取</button></div>
