@@ -82,7 +82,7 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 .insurance-plan{display:grid;gap:8px;padding:12px;border:1px solid rgba(148,163,184,.18);border-radius:12px}.insurance-plan>strong{font-size:13px}.insurance-plan label{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:center;font-size:12px}.insurance-plan input,.insurance-plan select{min-width:0;padding:8px;border-radius:8px}.insurance-plan>div{display:flex;gap:8px;flex-wrap:wrap}
 
 /* Keep insurance withdrawal controls visually consistent. */
-.insurance-plan select,.insurance-plan input{width:100%;box-sizing:border-box;min-height:48px;border:1px solid #34445e;background:#0a111c;color:#eaf1fb;border-radius:12px;padding:0 14px;font:inherit;font-size:16px}
-.insurance-plan select{appearance:auto}
+.insurance-plan select,.insurance-plan input{width:100%;box-sizing:border-box;min-height:48px;border:1px solid #34445e;background-color:#0a111c!important;color:#eaf1fb!important;border-radius:12px;padding:0 14px;font:inherit;font-size:16px;-webkit-appearance:none;appearance:none;color-scheme:dark}
+.insurance-plan select{padding-right:42px;background-image:linear-gradient(45deg,transparent 50%,#94a3b8 50%),linear-gradient(135deg,#94a3b8 50%,transparent 50%);background-position:calc(100% - 20px) 21px,calc(100% - 14px) 21px;background-size:6px 6px,6px 6px;background-repeat:no-repeat}
 .insurance-plan label{min-height:48px}
 @media(max-width:760px){.insurance-plan label{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.insurance-plan select,.insurance-plan input{min-height:48px}}
