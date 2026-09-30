@@ -224,3 +224,17 @@ The UI is still a prototype. Do not mistake polishing the current dashboard for 
 At the time this file was introduced, the most recent work was mobile UI normalization for participating-policy annual withdrawal controls. The next engineering session should first verify the latest `time-v2` state and Preview before assuming that UI is deployed.
 
 The product remains in **PHASE 1 — FINANCIAL ENGINE**.
+
+## 15. M1 annual-model assumptions (approved 2026-10-01 Asia/Taipei)
+
+The following rules are authoritative for the M1 whole-year settlement model. They are explicit model assumptions, not accidental consequences of React update order:
+
+1. Renewal premiums are due from opening cash. If opening cash cannot pay them, the entire year fails without changing holdings, markets, reports, history, or the saved world.
+2. Mortgage payments may use rent, stock dividends, bond coupons, and maturity proceeds generated during that year. If those sources plus cash remaining after premiums are insufficient, the entire year fails.
+3. The prototype external contribution of NT$300,000 arrives at year-end. It cannot cure an earlier premium or mortgage shortfall.
+4. Scheduled insurance withdrawals occur after the mortgage liquidity check. They cannot cure an earlier premium or mortgage shortfall.
+5. Buying a policy pays policy-year 1 immediately. The next successful annual settlement pays policy-year 2; premium records, policy-year valuation, and the settlement year must use the same boundary convention.
+6. Under the current whole-year model, a maturing bond pays its final full-year coupon and then repays face value.
+7. A deposit remains recorded at principal while outstanding and pays contractual simple-interest principal plus interest at maturity.
+
+Any future change to these timings is a product-rule change and must update the settlement tests and save compatibility notes.

@@ -1,9 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createAnnualTicket, createSettlementGuard, derivePortfolio, insuranceValue, settleYear, sellStockPosition as executeStockSale, withdrawPolicy, type CashFlow, type ProductHolding } from '@/lib/simulation';
+import { decodeWorld, writeWorld, WORLD_SAVE_VERSION } from '@/lib/persistence';
 
 const STORAGE_KEY = 'time-financial-life-simulator-v2';
 const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
+const WORLD_KEY = 'time-financial-life-simulator-v2-world';
+const SAVE_VERSION = WORLD_SAVE_VERSION;
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
 
 // Participating-policy baseline calibrated from the supplied real benefit illustration.
@@ -51,9 +55,9 @@ const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stoc
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
 const MARKET_MODEL_VERSION = 6;
 
-type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string };
+type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string; settlementId?:string };
 type MarketTrade = { year:number; age:number; asset:'stocks'|'bonds'; productId:string; label:string; side:'買入'|'賣出'; quantity:number; price:number; amount:number };
-type MarketSnapshot = { year:number; age:number; signals:MarketSignals; stockPrices:Record<string,number>; stockPaths:Record<string,number[]>; bondPrices:Record<string,number> };
+type MarketSnapshot = { year:number; age:number; signals:MarketSignals; stockPrices:Record<string,number>; stockPaths:Record<string,number[]>; bondPrices:Record<string,number>; settlementId?:string };
 type PropertyListing = { id:string; name:string; district:string; ping:number; price:number; marketRent:number; demand:number; populationTrend:number; birthRate:number; downPaymentRate:number; mortgageRate:number; mortgageYears:number };
 type PropertyHolding = PropertyListing & { boughtAge:number; purchasePrice:number; mortgageBalance:number; monthlyRent:number; rentalMode:'vacant'|'rent'; lastRentedMonths:number; lastRentalIncome:number; currentValue:number };
 const PROPERTY_TEMPLATES = [
@@ -85,7 +89,7 @@ const buildMarketSignals = (): MarketSignals => ({
   creditSpread: 0.006 + Math.random()*0.035,
 });
 
-const buildAnnualReport = (year:number, age:number, x:MarketSignals):AnnualReport => {
+const buildAnnualReport = (year:number, age:number, x:MarketSignals, settlementId?:string):AnnualReport => {
   const events=[
     {label:'總體經濟',text:`經濟成長 ${(x.growth*100).toFixed(1)}%，景氣${x.growth>0.025?'偏強':x.growth<0.008?'偏弱':'溫和'}。`},
     {label:'物價環境',text:`通膨率 ${(x.inflation*100).toFixed(1)}%，${x.inflation>0.04?'物價壓力明顯':'物價壓力相對溫和'}。`},
@@ -95,7 +99,7 @@ const buildAnnualReport = (year:number, age:number, x:MarketSignals):AnnualRepor
     {label:'市場消息',text:`政策、產業與信用消息整體${signalLabel(x.news,'偏正面','偏負面')}，信用利差 ${(x.creditSpread*100).toFixed(1)}%。`}
   ];
   const summary=`本年度景氣${x.growth>0.025?'較強':x.growth<0.008?'較弱':'溫和'}、通膨${x.inflation>0.04?'偏高':'相對穩定'}，利率${x.policyRate>0.04?'維持高檔':'壓力有限'}；企業獲利${x.earnings>=0?'成長':'轉弱'}，資金${x.flows>0.3?'偏向流入風險資產':x.flows<-0.3?'偏向撤出風險資產':'方向不明顯'}。不同訊號可能同時互相矛盾，市場價格不一定只受單一因素影響。`;
-  return {year,age,signals:x,events,summary};
+  return {year,age,signals:x,events,summary,settlementId};
 };
 
 const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
@@ -199,6 +203,10 @@ type HistoryEntry = {
   returnRate?: number;
   actions?: string[];
   changes?: string[];
+  openingPortfolio?: Portfolio;
+  cashFlows?: CashFlow[];
+  returnMethod?: string;
+  settlementId?: string;
 };
 
 type PendingChoice = {
@@ -234,6 +242,7 @@ type GameState = {
   timeMachineUnlocked: boolean;
   completed: boolean;
   analysis: string;
+  simulationSeed: string;
 };
 
 const BASE_PORTFOLIO: Portfolio = {
@@ -374,6 +383,7 @@ const buildInitialState = (): GameState => ({
   timeMachineUnlocked: false,
   completed: false,
   analysis: '你正在建立一個長期配置與現金需求的平衡。',
+  simulationSeed: `time-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 });
 
 const normalizeAllocations = (allocations: Allocation) => {
@@ -400,8 +410,10 @@ const asyncLoadGame = () => {
 export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
+  const [saveStatus,setSaveStatus]=useState<{state:'saved'|'unsaved'|'blocked';lastYear:number|null;message:string}>({state:'saved',lastYear:null,message:''});
+  const loadComplete=useRef(false);
   const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
-  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number; withdrawalMode?: 'none'|'fixed'|'percent'; withdrawalAmount?: number; withdrawalPercent?: number; withdrawalStartYear?: number; cumulativeWithdrawals?: number }>>([]);
+  const [productHoldings, setProductHoldings] = useState<ProductHolding[]>([]);
   const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
   const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
   const [insuranceWithdrawals, setInsuranceWithdrawals] = useState<Record<string,string>>({});
@@ -427,22 +439,51 @@ export default function Page() {
   const [propertyListings, setPropertyListings] = useState<PropertyListing[]>(()=>buildPropertyMarket(initialMarket.signals,0));
   const [propertyHoldings, setPropertyHoldings] = useState<PropertyHolding[]>([]);
   const [rentInputs, setRentInputs] = useState<Record<string,string>>({});
+  const settlementLock=useRef(createSettlementGuard());
+  const [isSettling,setIsSettling]=useState(false);
   const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
     if (researchOverlay?.key===key) setResearchOverlay(null);
     else setResearchOverlay({key,title,body});
   };
 
   useEffect(() => {
-    setIsMounted(true);
-    const saved = asyncLoadGame();
-    if (saved) {
-      setGame({ ...saved, pendingChoice: null, completed: false });
-    }
     try {
+      const rawWorld=window.localStorage.getItem(WORLD_KEY);
+      const decoded=decodeWorld(rawWorld);
+      if(decoded.ok){
+        const world=decoded.value;
+          setGame({...buildInitialState(),...world.game,pendingChoice:null});
+          setProductHoldings(world.holdings);
+          setProductHistory(Array.isArray(world.history)?world.history:[]);
+          setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);
+          setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setPropertyListings(world.propertyListings);setPropertyHoldings(world.properties);
+          setSaveStatus(decoded.diagnostics.length?{state:'blocked',lastYear:world.game.year,message:decoded.diagnostics.join(' ')}:{state:'saved',lastYear:world.game.year,message:''});
+          loadComplete.current=true;setIsMounted(true);
+          return;
+      }
+      if(rawWorld!==null){setSaveStatus({state:'blocked',lastYear:null,message:decoded.diagnostics.join(' ')||'存檔無法載入；原始資料已保留。'});loadComplete.current=true;setIsMounted(true);return}
+      const saved = asyncLoadGame();
+      let legacyGame=saved?{ ...buildInitialState(), ...saved, simulationSeed:saved.simulationSeed||'legacy-v2', pendingChoice: null }:null;
       const savedProducts = window.localStorage.getItem(HOLDINGS_KEY);
       if (savedProducts) {
         const parsed = JSON.parse(savedProducts);
-        if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
+        if (Array.isArray(parsed.holdings)) {
+          const recovered=parsed.holdings.map((holding:ProductHolding)=>{
+            if(holding.asset!=='insurance')return holding;
+            if(!Number.isFinite(holding.annualPremium)){
+              const answer=window.prompt(`舊保單「${holding.label}」缺少可確認的固定年繳保費。請依原契約輸入；取消將停止載入，原存檔會保留。`);
+              const premium=Number(answer);
+              if(answer===null||!Number.isFinite(premium)||premium<=0)throw new Error('LEGACY_POLICY_PREMIUM_REQUIRED');
+              return {...holding,annualPremium:premium,cashFlowHistoryComplete:false};
+            }
+            return {...holding,cashFlowHistoryComplete:Array.isArray(holding.policyCashFlows)};
+          });
+          setProductHoldings(recovered);
+          if(legacyGame){
+            const migratedPortfolio=derivePortfolio(legacyGame.portfolio.cash,recovered,Array.isArray(parsed.propertyHoldings)?parsed.propertyHoldings:[],parsed.stockPrices||stockPrices,parsed.bondPrices||bondPrices,parsed.marketSignals||marketSignals,legacyGame.age) as Portfolio;
+            legacyGame={...legacyGame,portfolio:migratedPortfolio};
+          }
+        }
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
         if (Array.isArray(parsed.marketSnapshots) && parsed.marketSnapshots.length) setMarketSnapshots(parsed.marketSnapshots);
         if (Array.isArray(parsed.marketTrades)) setMarketTrades(parsed.marketTrades);
@@ -465,18 +506,20 @@ export default function Page() {
           if (!hasSavedReports) setAnnualReports([migratedMarket.preGameReport]);
         }
       }
-    } catch {}
+      if(legacyGame)setGame(legacyGame);
+      if(saved||savedProducts)setSaveStatus({state:'unsaved',lastYear:null,message:'舊存檔已載入記憶體；請確認診斷後按「儲存」建立新版完整存檔。缺少的保單現金流不會被猜造，歷史報酬可能不可靠。'});
+    } catch(error) {setSaveStatus({state:'blocked',lastYear:null,message:error instanceof Error&&error.message==='LEGACY_POLICY_PREMIUM_REQUIRED'?'舊保單固定保費尚未確認，已停止載入；原始存檔保持不變。':'舊存檔無法安全載入；原始資料保持不變。'});}
+    loadComplete.current=true;setIsMounted(true);
   }, []);
 
   useEffect(() => {
-    if (!isMounted) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-  }, [game, isMounted]);
-
-  useEffect(() => {
-    if (!isMounted) return;
-    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, marketModelVersion: MARKET_MODEL_VERSION }));
-  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, isMounted]);
+    if (!isMounted||!loadComplete.current||saveStatus.state==='blocked') return;
+    const saved=writeWorld(window.localStorage,WORLD_KEY,buildSaveEnvelope());
+    if(saved.ok)setSaveStatus({state:'saved',lastYear:game.year,message:''});
+    else setSaveStatus(current=>({state:'unsaved',lastYear:current.lastYear,message:'自動儲存失敗；目前進度只在記憶體中。請按「儲存」重試。'}));
+    // buildSaveEnvelope intentionally reads the same committed render observed by this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -505,7 +548,7 @@ export default function Page() {
     const downPayment = listing.price * listing.downPaymentRate;
     if (game.portfolio.cash < downPayment) return alert('現金不足以支付頭期款');
     const mortgage = listing.price - downPayment;
-    setPropertyHoldings((current) => [...current, {
+    const purchased:PropertyHolding={
       ...listing,
       boughtAge: game.age,
       purchasePrice: listing.price,
@@ -515,15 +558,13 @@ export default function Page() {
       lastRentedMonths: 0,
       lastRentalIncome: 0,
       currentValue: listing.price,
-    }]);
+    };
+    const nextProperties=[...propertyHoldings,purchased];
+    setPropertyHoldings(nextProperties);
     setPropertyListings((current) => current.filter((property) => property.id !== listing.id));
+    const portfolio=derivePortfolio(game.portfolio.cash-downPayment,productHoldings,nextProperties,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setGame((current) => ({
-      ...current,
-      portfolio: {
-        ...current.portfolio,
-        cash: current.portfolio.cash - downPayment,
-        realEstate: current.portfolio.realEstate + downPayment,
-      },
+      ...current, portfolio,
       eventHistory: [...current.eventHistory, '買入房產：' + listing.name + '，總價 NT$' + listing.price.toLocaleString('en-US') + '，頭期 NT$' + roundMoney(downPayment).toLocaleString('en-US') + '。'],
       lifeStatus: '已購入 ' + listing.name + '，房貸將逐年攤還。',
     }));
@@ -541,15 +582,13 @@ export default function Page() {
   const sellProperty = (id:string) => {
     const property = propertyHoldings.find((item) => item.id === id);
     if (!property) return;
-    const equity = Math.max(0, property.currentValue - property.mortgageBalance);
-    setPropertyHoldings((current) => current.filter((item) => item.id !== id));
+    const equity = property.currentValue - property.mortgageBalance;
+    if(equity<0&&game.portfolio.cash+equity<0)return alert('房屋為負淨值，現金不足以清償出售後的剩餘房貸。');
+    const nextProperties=propertyHoldings.filter((item) => item.id !== id);
+    setPropertyHoldings(nextProperties);
+    const portfolio=derivePortfolio(game.portfolio.cash+equity,productHoldings,nextProperties,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setGame((current) => ({
-      ...current,
-      portfolio: {
-        ...current.portfolio,
-        cash: current.portfolio.cash + equity,
-        realEstate: Math.max(0, current.portfolio.realEstate - equity),
-      },
+      ...current, portfolio,
       eventHistory: [...current.eventHistory, '出售房產：' + property.name + '，清償剩餘房貸後回收 NT$' + roundMoney(equity).toLocaleString('en-US') + '。'],
       lifeStatus: '已出售 ' + property.name + '。',
     }));
@@ -566,21 +605,18 @@ export default function Page() {
     if (asset === 'bonds' && (!Number.isInteger(requestedBondUnits) || requestedBondUnits <= 0)) return alert('請輸入要買入的債券張數');
     if (asset !== 'stocks' && asset !== 'bonds' && amount <= 0) return alert('請先輸入投入金額');
     if (amount > game.portfolio.cash) return alert('現金不足');
-    setGame((current) => {
-      const nextPortfolio = { ...current.portfolio, cash: current.portfolio.cash - amount, [asset]: current.portfolio[asset] + amount };
-      const total = sumPortfolio(nextPortfolio);
-      const nextAllocations = { ...current.allocations };
-      ASSET_KEYS.forEach((key) => { nextAllocations[key] = total > 0 ? (nextPortfolio[key] / total) * 100 : 0; });
-      return { ...current, portfolio: nextPortfolio, allocations: nextAllocations, lifeStatus: `已購買商品，投入 NT${roundMoney(amount).toLocaleString('en-US')}。投入後不可直接修改本金。` };
-    });
     const product = productCatalog[asset].find((item) => item.id === productId);
     if (product) {
       const premiumTerm = productId === 'policy-5' ? 5 : productId === 'policy-10' ? 10 : undefined;
       const price = asset === 'stocks' ? (stockPrices[productId] || 100) : asset === 'bonds' ? (bondPrices[productId] || 100) : undefined;
       const maturityYears = productId === 'bond-5' ? 5 : productId === 'bond-10' ? 10 : productId === 'bond-corp' ? 7 : undefined;
       const couponRate = productId === 'bond-5' ? 0.028 : productId === 'bond-10' ? 0.032 : productId === 'bond-corp' ? 0.041 : undefined;
-      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: asset === 'stocks' ? requestedShares : undefined, bondUnits: asset === 'bonds' ? requestedBondUnits : undefined, faceValue: asset === 'bonds' ? 10000 : undefined, maturityYears, couponRate };
-      setProductHoldings((current) => [...current, purchase]);
+      const purchase:ProductHolding = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, annualPremium:premiumTerm?amount:undefined, policyScale:premiumTerm?1:undefined, policyCashFlows:premiumTerm?[{year:game.year,policyYear:1,type:'premium',amount}]:undefined, buyPrice: price, shares: asset === 'stocks' ? requestedShares : undefined, bondUnits: asset === 'bonds' ? requestedBondUnits : undefined, faceValue: asset === 'bonds' ? 10000 : undefined, maturityYears, couponRate };
+      const nextHoldings=[...productHoldings,purchase];
+      const nextPortfolio=derivePortfolio(game.portfolio.cash-amount,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
+      const total=sumPortfolio(nextPortfolio),allocations=Object.fromEntries(ASSET_KEYS.map(key=>[key,total>0?nextPortfolio[key]/total*100:0])) as Allocation;
+      setProductHoldings(nextHoldings);
+      setGame(current=>({...current,portfolio:nextPortfolio,allocations,lifeStatus:`已購買商品，投入 NT$${roundMoney(amount).toLocaleString('en-US')}。持倉已成為資產總表來源。`}));
       setProductHistory((current) => [...current, purchase]);
       if (asset==='stocks' || asset==='bonds') setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset,productId,label:product.label.split('｜')[0],side:'買入',quantity:asset==='stocks'?requestedShares:requestedBondUnits,price:price||0,amount}]);
     }
@@ -594,14 +630,13 @@ export default function Page() {
     if(!holding?.premiumTerm)return;
     const requested=Number(insuranceWithdrawals[holdingId]||0);
     if(requested<=0)return alert('請輸入提取金額');
-    const policyYear=Math.max(1,game.age-holding.boughtAge+1);
-    const currentValue=insuranceSurrenderValue(holding.amount,holding.premiumTerm,policyYear,marketSignals);
+    const currentValue=insuranceValue(holding,game.age,marketSignals);
     if(requested>currentValue)return alert('提取金額不能高於目前退保價值');
-    // Withdrawal reduces the policy's future economic base proportionally. This is a TIME simplification
-    // calibrated to the supplied withdrawal illustrations, not a contractual rule of any named product.
-    const remainingRatio=Math.max(0,(currentValue-requested)/Math.max(1,currentValue));
-    setProductHoldings((current)=>current.flatMap((h)=>h.id!==holdingId?[h]:remainingRatio<=0?[]:[{...h,amount:h.amount*remainingRatio}]));
-    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+requested,insurance:Math.max(0,current.portfolio.insurance-requested)},eventHistory:[...current.eventHistory,`保單提取：從 ${holding.label.split('｜')[0]} 提取 NT${roundMoney(requested).toLocaleString('en-US')}，已回到現金；後續保單價值基礎同步降低。`],lifeStatus:'已從分紅保單提取現金，後續非保證利益與退保價值將受影響。'}));
+    const updated=withdrawPolicy(holding,requested,game.year,game.age,marketSignals);
+    const nextHoldings=productHoldings.map(h=>h.id===holdingId?updated:h);
+    const portfolio=derivePortfolio(game.portfolio.cash+requested,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
+    setProductHoldings(nextHoldings);
+    setGame((current)=>({...current,portfolio,eventHistory:[...current.eventHistory,`保單提取：從 ${holding.label.split('｜')[0]} 提取 NT${roundMoney(requested).toLocaleString('en-US')}，已回到現金；原約定保費不變。`],lifeStatus:'已從分紅保單提取現金，提取時點與金額已記錄。'}));
     setInsuranceWithdrawals((x)=>({...x,[holdingId]:''}));
   };
 
@@ -622,36 +657,18 @@ export default function Page() {
     setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:'none',withdrawalAmount:undefined,withdrawalPercent:undefined,withdrawalStartYear:undefined}));
   };
 
-  const sellStock = (holdingId: string) => {
-    const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'stocks');
-    if (!holding) return;
-    const ownedShares = holding.shares || 0;
-    const sharesToSell = Number(stockTradeShares['sell-'+holdingId] || 0);
-    if (!Number.isInteger(sharesToSell) || sharesToSell <= 0) return alert('請輸入要賣出的整數股數');
-    if (sharesToSell > ownedShares) return alert('賣出股數不能超過目前持股');
-    const price = stockPrices[holding.productId] || 100;
-    const proceeds = sharesToSell * price;
-    const costBasisSold = (holding.buyPrice || 0) * sharesToSell;
-    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : sharesToSell === ownedShares ? [] : [{ ...item, shares: ownedShares - sharesToSell, amount: item.amount - costBasisSold }]));
-    setGame((current) => {
-      const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - proceeds) };
-      return { ...current, portfolio, lifeStatus: `已賣出 ${holding.label.split('｜')[0]}，NT${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`, eventHistory: [...current.eventHistory, `股票賣出：${holding.label.split('｜')[0]}，實現損益 NT${roundMoney(proceeds - holding.amount).toLocaleString('en-US')}。`] };
-    });
-    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
-    setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
-  };
-
   const sellStockPosition = (productId:string) => {
     const lots=productHoldings.filter((h)=>h.asset==='stocks' && h.productId===productId);
     const owned=lots.reduce((n,h)=>n+(h.shares||0),0);
     const sharesToSell=Number(stockTradeShares['sell-position-'+productId]||0);
     if(!Number.isInteger(sharesToSell)||sharesToSell<=0) return alert('請輸入要賣出的整數股數');
     if(sharesToSell>owned) return alert('賣出股數不能超過目前持股');
-    const price=stockPrices[productId]||100, totalCost=lots.reduce((n,h)=>n+h.amount,0), avgCost=owned>0?totalCost/owned:0, proceeds=sharesToSell*price;
-    let remaining=sharesToSell;
-    setProductHoldings((current)=>current.flatMap((item)=>{if(item.asset!=='stocks'||item.productId!==productId||remaining<=0)return[item];const q=item.shares||0,take=Math.min(q,remaining);remaining-=take;if(take===q)return[];return[{...item,shares:q-take,amount:item.amount-avgCost*take,buyPrice:avgCost}]}));
+    const price=stockPrices[productId]||100;
+    const sale=executeStockSale(productHoldings,productId,sharesToSell,price), proceeds=sale.proceeds, avgCost=sale.costBasis/sharesToSell;
+    setProductHoldings(sale.holdings);
     const label=lots[0]?.label.split('｜')[0]||productId;
-    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,stocks:Math.max(0,current.portfolio.stocks-proceeds)},lifeStatus:`已賣出 ${label} ${sharesToSell} 股，NT$${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`,eventHistory:[...current.eventHistory,`股票賣出：${label}，實現損益 NT$${roundMoney(proceeds-avgCost*sharesToSell).toLocaleString('en-US')}。`]}));
+    const portfolio=derivePortfolio(game.portfolio.cash+proceeds,sale.holdings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
+    setGame((current)=>({...current,portfolio,lifeStatus:`已賣出 ${label} ${sharesToSell} 股，NT$${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`,eventHistory:[...current.eventHistory,`股票賣出：${label}，實現損益 NT$${roundMoney(sale.realizedPnl).toLocaleString('en-US')}。`]}));
     setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId,label,side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
     setStockTradeShares((current)=>({...current,['sell-position-'+productId]:''}));
   };
@@ -668,8 +685,10 @@ export default function Page() {
     const proceeds = units * face * quote / 100;
     const costPerUnit = holding.amount / Math.max(owned, 1);
     const costSold = costPerUnit * units;
-    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount: item.amount-costSold}]));
-    setGame((current) => ({...current, portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,bonds:Math.max(0,current.portfolio.bonds-proceeds)}, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
+    const nextHoldings=productHoldings.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount:item.amount-costSold}]);
+    const portfolio=derivePortfolio(game.portfolio.cash+proceeds,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
+    setProductHoldings(nextHoldings);
+    setGame((current) => ({...current, portfolio, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
     setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'bonds',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:units,price:quote,amount:proceeds}]);
     setBondTradeUnits((current)=>({...current,['sell-'+holdingId]:''}));
   };
@@ -682,14 +701,17 @@ export default function Page() {
     const cost=lots.reduce((n,h)=>n+h.amount,0);
     return {product,lots,shares,cost,avgCost:shares>0?cost/shares:0};
   }).filter((x)=>x.shares>0);
-  const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+h.amount,0);
+  const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+(h.annualPremium??0),0);
 
   const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
   const allocationAmountTotal = totalAssets * (allocationTotal / 100);
   const allocationDifference = totalAssets - allocationAmountTotal;
   const allocationValid = Math.abs(allocationDifference) < 1;
 
+  const buildSaveEnvelope=()=>({version:SAVE_VERSION,savedAt:new Date().toISOString(),lastSettlementId:game.history.at(-1)?.settlementId,settlementHistoryComplete:game.history.length===0||Boolean(game.history.at(-1)?.settlementId),game,holdings:productHoldings,history:productHistory,properties:propertyHoldings,propertyListings,market:{stockPrices,stockPriceHistory,bondPrices,marketSignals,annualReports,marketSnapshots,marketTrades,marketModelVersion:MARKET_MODEL_VERSION}});
+
   const handleRestart = () => {
+    if(saveStatus.state!=='saved'&&!window.confirm('目前有尚未成功儲存的進度。重新開始會放棄記憶體中的變更，確定繼續嗎？'))return;
     const fresh = buildInitialState();
     setGame(fresh);
     setProductHoldings([]);
@@ -704,413 +726,92 @@ export default function Page() {
     setMarketYear(null);
     setMarketSnapshots([{year:0,age:24,signals:restartedMarket.signals,stockPrices:restartedMarket.stockPrices,stockPaths:restartedMarket.stockPriceHistory,bondPrices:restartedMarket.bondPrices}]);
     setMarketTrades([]);
+    setPropertyHoldings([]);
+    setPropertyListings(buildPropertyMarket(restartedMarket.signals,0));
     setStockTradeShares({});
     setBondTradeUnits({});
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
       window.localStorage.removeItem(HOLDINGS_KEY);
+      window.localStorage.removeItem(WORLD_KEY);
     }
+    setSaveStatus({state:'saved',lastYear:1,message:''});
   };
 
   const handleSave = () => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
-      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, marketModelVersion: MARKET_MODEL_VERSION }));
-      alert('遊戲已儲存');
+      if(saveStatus.state==='blocked'&&saveStatus.lastYear===null)return alert('目前存檔尚未通過驗證，請先使用「修復舊保單」補回契約資料；原始存檔不會被覆寫。');
+      if(saveStatus.state==='blocked'&&!window.confirm('目前載入的總表與持倉不一致。確定以持倉推導的總表另存為新版完整存檔嗎？'))return;
+      const saved=writeWorld(window.localStorage,WORLD_KEY,buildSaveEnvelope());
+      if(saved.ok){setSaveStatus({state:'saved',lastYear:game.year,message:''});alert('完整世界已儲存')}
+      else{setSaveStatus(current=>({state:'unsaved',lastYear:current.lastYear,message:'儲存失敗；目前進度只在記憶體中。請稍後按「儲存」重試。'}));alert('儲存失敗；上一份有效存檔仍保留。')}
     }
+  };
+
+  const handleRecoverLegacyPolicies=()=>{
+    const raw=window.localStorage.getItem(WORLD_KEY);if(!raw)return alert('沒有可修復的完整世界存檔。');
+    try{
+      const candidate=JSON.parse(raw);
+      if(!Array.isArray(candidate.holdings))return alert('存檔缺少持倉，無法自動修復。');
+      candidate.holdings=candidate.holdings.map((holding:ProductHolding)=>{
+        if(holding.asset!=='insurance'||Number.isFinite(holding.annualPremium))return holding;
+        const answer=window.prompt(`請依原契約輸入「${holding.label}」的固定年繳保費。此值無法由舊 amount 安全推測。`);
+        const premium=Number(answer);if(answer===null||!Number.isFinite(premium)||premium<=0)throw new Error('CANCELLED');
+        return{...holding,annualPremium:premium,cashFlowHistoryComplete:Array.isArray(holding.policyCashFlows)};
+      });
+      const decoded=decodeWorld(JSON.stringify(candidate));if(!decoded.ok)return alert(`仍無法載入：${decoded.diagnostics.join(' ')}`);
+      const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);
+      setSaveStatus({state:'unsaved',lastYear:null,message:'契約固定保費已補回記憶體；原始存檔仍未改動。請按「儲存」確認建立新版存檔。缺失的歷史現金流仍標示為不完整。'});
+    }catch{alert('未完成契約資料補回；原始存檔保持不變。')}
   };
 
   const handleContinue = () => {
-    const saved = asyncLoadGame();
-    if (saved) {
-      setGame(saved);
-      alert('載入進度成功');
-    } else {
-      alert('目前沒有可繼續的存檔');
-    }
+    const decoded=decodeWorld(window.localStorage.getItem(WORLD_KEY));if(!decoded.ok)return alert(decoded.reason==='missing'?'目前沒有完整世界存檔；舊存檔會在重新載入頁面時遷移。':`存檔無法安全載入；原始資料已保留。${decoded.diagnostics.join(' ')}`);const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setSaveStatus(decoded.diagnostics.length?{state:'blocked',lastYear:world.game.year,message:decoded.diagnostics.join(' ')}:{state:'saved',lastYear:world.game.year,message:''});alert(decoded.diagnostics.length?'完整世界已載入，但總表不一致；請檢查診斷後手動儲存。':'完整世界載入成功');
   };
 
   const advanceYear = () => {
-    if (game.pendingChoice || game.completed) return;
-
-    const signals = buildMarketSignals();
+    if (game.pendingChoice || game.completed || !settlementLock.current.acquire()) return;
+    setIsSettling(true);
+    const ticket=createAnnualTicket(game.simulationSeed||'legacy-v2',game.year,Object.keys(stockPrices),propertyHoldings);
+    const openingPortfolio=derivePortfolio(game.portfolio.cash,productHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
+    const result=settleYear({year:game.year,age:game.age,cash:game.portfolio.cash,holdings:productHoldings,properties:propertyHoldings,stockPrices,bondPrices,previousSignals:marketSignals,ticket,annualCapital:300000});
+    if(!result.ok){
+      settlementLock.current.release();setIsSettling(false);
+      alert(result.message);
+      return;
+    }
+    const signals=ticket.signals;
+    const report=buildAnnualReport(game.year,game.age,signals,result.ticketKey);
+    const closingPortfolio=result.portfolio as Portfolio;
+    const finalTotal=sumPortfolio(closingPortfolio);
+    const external=result.cashFlows.filter(flow=>flow.kind==='external').reduce((n,flow)=>n+flow.amount,0);
+    const simpleReturn=sumPortfolio(openingPortfolio)>0?(finalTotal-external-sumPortfolio(openingPortfolio))/sumPortfolio(openingPortfolio):0;
+    const flowLabels=result.cashFlows.map(flow=>`${flow.label}：${flow.amount>=0?'+':'-'}NT$${roundMoney(Math.abs(flow.amount)).toLocaleString('en-US')}`);
+    const annualChanges=ASSET_KEYS.map(asset=>`${ASSET_META[asset].label}｜期初 NT$${roundMoney(openingPortfolio[asset]).toLocaleString('en-US')}｜期末 NT$${roundMoney(closingPortfolio[asset]).toLocaleString('en-US')}`);
+    const nextAge=game.age+1;
+    const nextHistory:HistoryEntry={year:game.year,age:game.age,total:finalTotal,real:getRealWealth(finalTotal,(1+game.cumulativeInflation)*(1+signals.inflation)-1),liquidity:getLiquidity(closingPortfolio),eventTitle:`第 ${game.year} 年財務結算`,portfolio:{...closingPortfolio},openingPortfolio:{...openingPortfolio},returnRate:simpleReturn,returnMethod:'簡化期末報酬：外部新增資金視為年末流入；非 TWR/MWR',actions:[...marketTrades.filter(t=>t.year===game.year).map(t=>`${t.side} ${t.label} ${t.quantity}${t.asset==='stocks'?'股':'張'}｜NT$${roundMoney(t.amount).toLocaleString('en-US')}`),...flowLabels],cashFlows:result.cashFlows.map(x=>({...x})),changes:annualChanges,settlementId:result.ticketKey};
+    const histories=[...game.history,nextHistory];
+    let peak=histories[0]?.total||finalTotal,maxDrawdown=0;
+    histories.forEach(entry=>{peak=Math.max(peak,entry.total);if(peak>0)maxDrawdown=Math.max(maxDrawdown,1-entry.total/peak)});
+    const nextGame:GameState={...game,age:nextAge,year:game.year+1,portfolio:{...closingPortfolio},allocations:Object.fromEntries(ASSET_KEYS.map(k=>[k,finalTotal>0?closingPortfolio[k]/finalTotal*100:0])) as Allocation,income:0,expense:0,lifeStatus:report.summary,inflationRate:signals.inflation,cumulativeInflation:(1+game.cumulativeInflation)*(1+signals.inflation)-1,eventHistory:[...game.eventHistory,...flowLabels,`第 ${game.year} 年金融年報：${report.summary}`],history:histories,marketEvent:null,lastLifeEvent:null,pendingChoice:null,marketCrisisCount:signals.growth<0&&signals.riskAppetite<-.55?game.marketCrisisCount+1:game.marketCrisisCount,maxDrawdown,completed:nextAge>=65};
+    if(nextGame.completed)nextGame.analysis=buildFinalAnalysis(nextGame);
+    // One validated settlement is committed as a single synchronous adapter action.
+    setProductHoldings(result.holdings);
+    setPropertyHoldings(result.properties);
+    setStockPrices(result.stockPrices);
+    setStockPriceHistory(current=>Object.fromEntries(Object.keys(result.stockPrices).map(id=>[id,[...(current[id]||[stockPrices[id]]),...(result.stockPaths[id]||[])]])));
+    setBondPrices(result.bondPrices);
     setMarketSignals(signals);
-    // Scheduled policy withdrawals are processed once per policy year before the next valuation.
-    let scheduledInsuranceCash=0;
-    const scheduledWithdrawalEvents:string[]=[];
-    const holdingsAfterScheduledWithdrawals=productHoldings.map(h=>{
-      if(h.asset!=='insurance'||!h.premiumTerm||!h.withdrawalMode||h.withdrawalMode==='none'||!h.withdrawalStartYear)return h;
-      const nextPolicyYear=Math.max(1,game.age+1-h.boughtAge+1);
-      if(nextPolicyYear<h.withdrawalStartYear)return h;
-      const currentValue=insuranceSurrenderValue(h.amount,h.premiumTerm,nextPolicyYear,signals);
-      const originalScheduledPremium=h.amount*h.premiumTerm;
-      const requested=h.withdrawalMode==='fixed'?(h.withdrawalAmount||0):originalScheduledPremium*((h.withdrawalPercent||0)/100);
-      const paid=Math.min(currentValue,Math.max(0,requested));
-      if(paid<=0)return h;
-      scheduledInsuranceCash+=paid;
-      scheduledWithdrawalEvents.push(`保單年度提取：${h.label.split('｜')[0]} 第 ${nextPolicyYear} 年提取 NT${roundMoney(paid).toLocaleString('en-US')}。`);
-      const remainingRatio=Math.max(0,(currentValue-paid)/Math.max(1,currentValue));
-      return {...h,amount:h.amount*remainingRatio,cumulativeWithdrawals:(h.cumulativeWithdrawals||0)+paid};
-    });
-    if(scheduledInsuranceCash>0)setProductHoldings(holdingsAfterScheduledWithdrawals);
-    setAnnualReports((current)=>[...current, buildAnnualReport(game.year, game.age, signals)]);
-    const nextStockPrices: Record<string, number> = { ...stockPrices };
-    const newMonthlyPaths: Record<string, number[]> = {};
-    Object.keys(nextStockPrices).forEach((id) => {
-      const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12 } : { drift: 0.07, vol: 0.16 };
-      let price = nextStockPrices[id];
-      const path:number[] = [];
-      for (let month=0; month<12; month++) {
-        const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
-        price = Math.max(5, price * (1 + profile.drift/12 + shock));
-        path.push(price);
-      }
-      nextStockPrices[id] = price;
-      newMonthlyPaths[id] = path;
-    });
-    setStockPrices(nextStockPrices);
-    setStockPriceHistory((current) => {
-      const next = { ...current };
-      Object.keys(nextStockPrices).forEach((id) => { next[id] = [...(next[id] || [stockPrices[id]]), ...newMonthlyPaths[id]]; });
-      return next;
-    });
-
-    // Bond quotes are per 100 face value. Rates up => prices down; longer duration moves more.
-    const rateShock = (signals.policyRate - selectedSignals.policyRate) + (signals.inflation-selectedSignals.inflation)*0.35;
-    const nextBondPrices:Record<string,number> = {...bondPrices};
-    Object.keys(nextBondPrices).forEach((id)=>{
-      const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
-      const creditShock = id === 'bond-corp' ? (Math.random()-0.5)*0.035 : 0;
-      nextBondPrices[id] = clamp(nextBondPrices[id] * (1 - duration*rateShock + creditShock), 65, 125);
-    });
-    setBondPrices(nextBondPrices);
-    setMarketSnapshots((current)=>[...current,{year:game.year,age:game.age,signals,stockPrices:nextStockPrices,stockPaths:newMonthlyPaths,bondPrices:nextBondPrices}]);
-
-    // Distributing ETFs: payout varies with earnings / macro conditions, then NAV drops by the cash distribution per share.
-    const baseDividendRates:Record<string,number>={'stock-world':0.020,'stock-tech':0.008,'stock-dividend':0.040};
-    const dividendGrowthFactor=clamp(1+signals.earnings*0.55+signals.growth*1.2+signals.news*0.025,0.72,1.18);
-    const dividendPerShare:Record<string,number>={};
-    Object.keys(nextStockPrices).forEach((id)=>{
-      const referencePrice=stockPrices[id]||nextStockPrices[id]||100;
-      const payoutRate=baseDividendRates[id]||0;
-      const cashDistribution=Math.max(0,referencePrice*payoutRate*dividendGrowthFactor);
-      dividendPerShare[id]=cashDistribution;
-      nextStockPrices[id]=Math.max(1,nextStockPrices[id]-cashDistribution);
-      const path=newMonthlyPaths[id];
-      if(path?.length)path[path.length-1]=nextStockPrices[id];
-    });
-    // Re-save post-distribution prices so charts and holdings use ex-dividend NAV.
-    setStockPrices(nextStockPrices);
-    setStockPriceHistory((current)=>{
-      const next={...current};
-      Object.keys(nextStockPrices).forEach((id)=>{const existing=next[id]||[stockPrices[id]];next[id]=[...existing.slice(0,Math.max(1,existing.length-12)),...(newMonthlyPaths[id]||[])];});
-      return next;
-    });
-    const stockDividends=productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(dividendPerShare[h.productId]||0),0);
-    const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
-    const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
-    const bondCoupons = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(h.couponRate||0),0);
-    const maturingBonds = productHoldings.filter((h)=>h.asset==='bonds' && h.maturityYears && game.age+1 >= h.boughtAge+h.maturityYears);
-    const maturedFace = maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000),0);
-    if (maturingBonds.length) setProductHoldings((current)=>current.filter((h)=>!maturingBonds.some((m)=>m.id===h.id)));
-    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace+stockDividends}, eventHistory:[...current.eventHistory, ...(stockDividends>0?[`股票配息：NT${roundMoney(stockDividends).toLocaleString('en-US')} 已進入現金。`]:[]), ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
-
-    // Real estate: price, mortgage and rental results are simulated once per year.
-    let propertyCashFlow=0;
-    let propertyEquity=0;
-    const nextProperties=propertyHoldings.map((p)=>{
-      const appreciation=clamp(0.025+signals.growth*0.9-signals.policyRate*0.45+p.populationTrend*1.5+productNoise(0.035),-0.12,0.14);
-      const currentValue=Math.max(500000,p.currentValue*(1+appreciation));
-      const monthlyRate=p.mortgageRate/12;
-      const months=p.mortgageYears*12;
-      const payment=p.mortgageBalance>0 ? p.mortgageBalance*(monthlyRate*Math.pow(1+monthlyRate,months))/(Math.pow(1+monthlyRate,months)-1) : 0;
-      let balance=p.mortgageBalance, annualMortgage=0;
-      for(let m=0;m<12 && balance>0;m++){const interest=balance*monthlyRate;const principal=Math.min(balance,Math.max(0,payment-interest));balance-=principal;annualMortgage+=interest+principal;}
-      let rentedMonths=0, rentalIncome=0;
-      if(p.rentalMode==='rent'){
-        const priceRatio=p.monthlyRent/Math.max(1,p.marketRent);
-        const occupancy=clamp(p.demand-(priceRatio-1)*0.85+signals.growth*0.8+productNoise(0.12),0.05,1);
-        rentedMonths=Math.max(0,Math.min(12,Math.round(occupancy*12)));
-        rentalIncome=p.monthlyRent*rentedMonths;
-      }
-      propertyCashFlow += rentalIncome-annualMortgage;
-      propertyEquity += Math.max(0,currentValue-balance);
-      return {...p,currentValue,mortgageBalance:balance,lastRentedMonths:rentedMonths,lastRentalIncome:rentalIncome,mortgageRate:Math.max(0.018,signals.policyRate*0.55+0.012)};
-    });
-    if(nextProperties.length) setPropertyHoldings(nextProperties);
+    setMarketSnapshots(current=>[...current,{year:game.year,age:game.age,signals,stockPrices:{...result.stockPrices},stockPaths:Object.fromEntries(Object.entries(result.stockPaths).map(([id,path])=>[id,[...path]])),bondPrices:{...result.bondPrices},settlementId:result.ticketKey}]);
+    setAnnualReports(current=>[...current,report]);
     setPropertyListings(buildPropertyMarket(signals,game.year));
-
-    // Participating policies are recurring premium contracts.
-    // The first entered amount becomes the fixed annual premium for the full premium term.
-    const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
-    if (activePolicies.length) {
-      const due = activePolicies.reduce((sum, holding) => sum + holding.amount, 0);
-      if (game.portfolio.cash < due) {
-        alert(`保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 即將到期，但目前現金不足。請先保留足夠現金；保費屬於既有契約的強制年度支出。`);
-        return;
-      }
-      setProductHoldings((current) => current.map((holding) => {
-        if (holding.asset !== 'insurance' || !holding.premiumTerm || (holding.premiumsPaid || 1) >= holding.premiumTerm) return holding;
-        return { ...holding, premiumsPaid: (holding.premiumsPaid || 1) + 1 };
-      }));
-      setGame((current) => ({
-        ...current,
-        portfolio: { ...current.portfolio, cash: current.portfolio.cash - due, insurance: current.portfolio.insurance + due },
-        eventHistory: [...current.eventHistory, `保單續期：本年度自動繳交保費 NT${roundMoney(due).toLocaleString('en-US')}。`],
-        lifeStatus: `既有保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 已自動從現金扣除。`,
-      }));
-    }
-
-    // Mature fixed deposits before the new year's market/life simulation.
-    // Principal + contractual interest returns to cash, and the holding disappears.
-    const maturingDeposits = productHoldings.filter((holding) => {
-      if (holding.asset !== 'deposit') return false;
-      const term = holding.productId === 'deposit-1' ? 1 : holding.productId === 'deposit-3' ? 3 : 0;
-      return term > 0 && game.age + 1 >= holding.boughtAge + term;
-    });
-    if (maturingDeposits.length) {
-      const proceeds = maturingDeposits.reduce((sum, holding) => {
-        const term = holding.productId === 'deposit-1' ? 1 : 3;
-        const rate = holding.productId === 'deposit-1' ? 0.02 : 0.024;
-        return sum + holding.amount * (1 + rate * term);
-      }, 0);
-      const principal = maturingDeposits.reduce((sum, holding) => sum + holding.amount, 0);
-      setProductHoldings((current) => current.filter((holding) => !maturingDeposits.some((matured) => matured.id === holding.id)));
-      setGame((current) => {
-        const portfolio = { ...current.portfolio, deposit: Math.max(0, current.portfolio.deposit - principal), cash: current.portfolio.cash + proceeds };
-        const total = sumPortfolio(portfolio);
-        const allocations = { ...current.allocations };
-        ASSET_KEYS.forEach((key) => { allocations[key] = total > 0 ? (portfolio[key] / total) * 100 : 0; });
-        return { ...current, portfolio, allocations, eventHistory: [...current.eventHistory, `定存到期：本金與利息 NT${roundMoney(proceeds).toLocaleString('en-US')} 已回到現金。`] };
-      });
-    }
-
-    setGame((current) => {
-      const totalBefore = sumPortfolio(current.portfolio);
-      const rebalanced = { ...current.portfolio };
-
-      // One market world: the same MarketSignals drive the annual report and asset behaviour.
-      const inflationRate = signals.inflation;
-      const reReturn = clamp(
-        0.035 + signals.growth*1.25 - signals.policyRate*0.65 - signals.creditSpread*0.35 + productNoise(0.045),
-        -0.16, 0.18
-      );
-      // Insurance is valued as a policy surrender value, not as principal compounded by an annual return.
-      const insuranceMarketValue = productHoldings.filter((h)=>h.asset==='insurance'&&h.premiumTerm).reduce((sum,h)=>sum+insuranceSurrenderValue(h.amount,h.premiumTerm!,Math.max(1,current.age+1-h.boughtAge+1),signals),0);
-      const cashReturn = Math.max(0, signals.policyRate*0.45);
-      const depositReturn = Math.max(0.005, signals.policyRate*0.72);
-
-      let nextPortfolio: Portfolio = {
-        ...rebalanced,
-        cash: rebalanced.cash * (1 + cashReturn),
-        deposit: rebalanced.deposit * (1 + depositReturn),
-        // Stocks and bonds are valued from their discrete holdings/market engines above.
-        stocks: stockMarketValue,
-        bonds: Math.max(0, bondMarketValue - maturedFace),
-        realEstate: nextProperties.length ? propertyEquity : rebalanced.realEstate * (1 + reReturn),
-        insurance: insuranceMarketValue,
-      };
-      // Annual Capital: simplified outside investable cash flow.
-      // Living costs and salary management stay outside the game; the player simply receives
-      // NT$300,000 of fresh investable capital each year.
-      const annualCapital = 300000;
-      nextPortfolio.cash += stockDividends + bondCoupons + maturedFace + propertyCashFlow + annualCapital + scheduledInsuranceCash;
-
-      const report = buildAnnualReport(current.year, current.age, signals);
-      const nextLifeStatus = report.summary;
-      const nextEventHistory = [...current.eventHistory, ...scheduledWithdrawalEvents, `年度新增資金：NT$300,000 已進入現金。`, `第 ${current.year} 年金融年報：${report.summary}`];
-      const nextAnalysis = '本年度資產表現與金融年報共用同一組市場訊號，不再由單一隨機事件額外修改資產價格。';
-
-      const finalTotal = sumPortfolio(nextPortfolio);
-      const nextAge = current.age + 1;
-      const cashDelta = nextPortfolio.cash - current.portfolio.cash;
-      const rentIncome = nextProperties.reduce((sum, property) => sum + property.lastRentalIncome, 0);
-      const annualChanges = [
-        `現金｜期末 NT${roundMoney(nextPortfolio.cash).toLocaleString('en-US')}｜較年初 ${cashDelta >= 0 ? '+' : '-'}NT${roundMoney(Math.abs(cashDelta)).toLocaleString('en-US')}`,
-        `定存｜期末 NT${roundMoney(nextPortfolio.deposit).toLocaleString('en-US')}｜持有 ${productHoldings.filter((holding) => holding.asset === 'deposit').length} 筆`,
-        `債券｜期末市值 NT${roundMoney(nextPortfolio.bonds).toLocaleString('en-US')}｜本年票息 NT${roundMoney(bondCoupons).toLocaleString('en-US')}`,
-        `股票｜期末市值 NT${roundMoney(nextPortfolio.stocks).toLocaleString('en-US')}｜本年現金股息 NT${roundMoney(stockDividends).toLocaleString('en-US')}`,
-        `房地產｜期末淨值 NT${roundMoney(nextPortfolio.realEstate).toLocaleString('en-US')}｜本年租金收入 NT${roundMoney(rentIncome).toLocaleString('en-US')}`,
-        `長期保險｜期末退保價值 NT${roundMoney(nextPortfolio.insurance).toLocaleString('en-US')}｜達成率 ${(insuranceFulfillment(signals) * 100).toFixed(1)}%`,
-      ];
-      const nextHistory: HistoryEntry = {
-        year: current.year,
-        age: current.age,
-        total: finalTotal,
-        real: getRealWealth(finalTotal, (1 + current.cumulativeInflation) * (1 + inflationRate) - 1),
-        liquidity: getLiquidity(nextPortfolio),
-        eventTitle: `第 ${current.year} 年金融年報`,
-        portfolio: nextPortfolio,
-        returnRate: (() => { const startTotal = current.history.length ? current.history[current.history.length - 1].total : sumPortfolio(current.portfolio); return startTotal > 0 ? (finalTotal - annualCapital - startTotal) / startTotal : 0; })(),
-        // Only operations created during this advanceYear belong to this year's history.
-        // eventHistory is cumulative, so use its pre-year length as the boundary.
-        actions: nextEventHistory.slice(current.eventHistory.length).filter((x) => !x.includes('金融年報：')),
-        changes: annualChanges,
-      };
-
-      const newHistory = [...current.history, nextHistory];
-      const maxDrawdown = Math.max(
-        current.maxDrawdown,
-        1 - Math.min(...newHistory.map((entry) => entry.total)) / Math.max(...newHistory.map((entry) => entry.total), 1)
-      );
-
-      const finalized: GameState = {
-        ...current,
-        age: nextAge,
-        year: current.year + 1,
-        portfolio: nextPortfolio,
-        income: 0,
-        expense: 0,
-        lifeStatus: nextLifeStatus,
-        inflationRate,
-        cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
-        eventHistory: nextEventHistory,
-        history: newHistory,
-        marketEvent: null,
-        lastLifeEvent: null,
-        pendingChoice: null,
-        timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
-        marketCrisisCount: (signals.growth < 0 && signals.riskAppetite < -0.55) ? current.marketCrisisCount + 1 : current.marketCrisisCount,
-        maxDrawdown,
-        completed: nextAge >= 65,
-      };
-
-      if (nextAge >= 65) {
-        finalized.analysis = buildFinalAnalysis(finalized);
-      }
-
-      return finalized;
-    });
+    setGame(nextGame);
   };
 
-  const resolveChoice = (action: 'cash' | 'deposit' | 'stocks' | 'bonds' | 'realEstate' | 'insurance' | 'delay') => {
-    setGame((current) => {
-      if (!current.pendingChoice || !current.lastLifeEvent) return current;
+  useEffect(()=>{settlementLock.current.release();setIsSettling(false)},[game.year]);
 
-      const eventAmount = current.pendingChoice.amount;
-      let nextPortfolio = { ...current.portfolio };
-      let status = `${current.lastLifeEvent.title}：你選擇 ${action}.`;
-      let increasedCrisis = current.liquidityCrisisCount;
-      let increasedForcedSell = current.forcedSellCount;
-
-      if (action === 'cash') {
-        if (nextPortfolio.cash >= eventAmount) {
-          nextPortfolio.cash -= eventAmount;
-        } else {
-          nextPortfolio = applyForcedSale(nextPortfolio, eventAmount - nextPortfolio.cash, 'cash');
-          nextPortfolio.cash = 0;
-          increasedForcedSell += 1;
-          increasedCrisis += 1;
-          status = `${current.lastLifeEvent.title}：現金不足，你被迫賣出資產。`;
-        }
-      } else if (action === 'deposit') {
-        if (nextPortfolio.deposit >= eventAmount) {
-          nextPortfolio.deposit -= eventAmount;
-        } else {
-          const shortfall = eventAmount - nextPortfolio.deposit;
-          nextPortfolio.deposit = 0;
-          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'deposit');
-          increasedForcedSell += 1;
-          status = `${current.lastLifeEvent.title}：定存不足，你必須動用其他資產。`;
-        }
-      } else if (action === 'stocks') {
-        if (nextPortfolio.stocks >= eventAmount) {
-          nextPortfolio.stocks -= eventAmount;
-        } else {
-          const shortfall = eventAmount - nextPortfolio.stocks;
-          nextPortfolio.stocks = 0;
-          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'stocks');
-          increasedForcedSell += 1;
-          status = `${current.lastLifeEvent.title}：股票不足，你被迫在低點賣出。`;
-        }
-      } else if (action === 'bonds') {
-        if (nextPortfolio.bonds >= eventAmount) {
-          nextPortfolio.bonds -= eventAmount;
-        } else {
-          const shortfall = eventAmount - nextPortfolio.bonds;
-          nextPortfolio.bonds = 0;
-          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'bonds');
-          increasedForcedSell += 1;
-          status = `${current.lastLifeEvent.title}：債券不足，流動性危機加劇。`;
-        }
-      } else if (action === 'realEstate') {
-        if (nextPortfolio.realEstate >= eventAmount) {
-          nextPortfolio.realEstate -= eventAmount;
-        } else {
-          const shortfall = eventAmount - nextPortfolio.realEstate;
-          nextPortfolio.realEstate = 0;
-          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'realEstate');
-          increasedForcedSell += 1;
-          status = `${current.lastLifeEvent.title}：房地產變現成本高，會讓你面臨更大流動壓力。`;
-        }
-      } else if (action === 'insurance') {
-        if (nextPortfolio.insurance >= eventAmount) {
-          nextPortfolio.insurance -= eventAmount;
-        } else {
-          const shortfall = eventAmount - nextPortfolio.insurance;
-          nextPortfolio.insurance = 0;
-          nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'insurance');
-          increasedForcedSell += 1;
-          status = `${current.lastLifeEvent.title}：保險的長期流動性有限，你只好變賣其他資產。`;
-        }
-      } else if (action === 'delay') {
-        status = `${current.lastLifeEvent.title}：你延後計畫，保留資金，但未來的生活成本會更重。`;
-      }
-
-      const nextAge = current.age;
-      const newHistory = [...current.history, {
-        year: current.year - 1,
-        age: current.age,
-        total: sumPortfolio(nextPortfolio),
-        real: getRealWealth(sumPortfolio(nextPortfolio), current.cumulativeInflation),
-        liquidity: getLiquidity(nextPortfolio),
-        eventTitle: current.lastLifeEvent.title,
-      }];
-
-      const finalState: GameState = {
-        ...current,
-        age: nextAge,
-        year: current.year,
-        portfolio: nextPortfolio,
-        lastLifeEvent: null,
-        pendingChoice: null,
-        lifeStatus: status,
-        eventHistory: [...current.eventHistory, status],
-        history: newHistory,
-        forcedSellCount: increasedForcedSell,
-        liquidityCrisisCount: increasedCrisis,
-        completed: nextAge >= 65,
-      };
-
-      if (nextAge >= 65) {
-        finalState.analysis = buildFinalAnalysis(finalState);
-      }
-
-      return finalState;
-    });
-  };
-
-  const applyForcedSale = (portfolio: Portfolio, amount: number, preferred: AssetKey): Portfolio => {
-    const next = { ...portfolio };
-    let remaining = amount;
-
-    const salesPriority: AssetKey[] = ['stocks', 'bonds', 'realEstate', 'insurance', 'deposit', 'cash'];
-    const ordered = salesPriority.filter((key) => key !== preferred);
-
-    ordered.forEach((asset) => {
-      if (remaining <= 0) return;
-      const sellNow = Math.min(next[asset], remaining);
-      next[asset] -= sellNow;
-      next.cash += sellNow;
-      remaining -= sellNow;
-    });
-
-    if (remaining > 0) {
-      next.cash = Math.max(next.cash - remaining, 0);
-    }
-
-    return next;
-  };
+  // Legacy aggregate forced-sale/choice settlement is intentionally disconnected.
+  // Future Life Engine choices must execute holding-level transactions through the simulation ledger.
 
   const buildFinalAnalysis = (state: GameState) => {
     if (state.completed) {
@@ -1129,7 +830,7 @@ export default function Page() {
     return '你正在處理風險、流動性與時間資源之間的取捨。';
   };
 
-  const canAdvance = !game.pendingChoice && !game.completed && allocationValid;
+  const canAdvance = !game.pendingChoice && !game.completed && allocationValid && !isSettling;
 
   const selectedMarketYear = marketYear ?? (marketSnapshots[marketSnapshots.length-1]?.year ?? 0);
   const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
@@ -1157,6 +858,11 @@ export default function Page() {
             <button className="danger" onClick={handleRestart}>Restart</button>
           </div>
         </header>
+        {saveStatus.state!=='saved'&&<div role="status" style={{marginBottom:16,padding:'12px 16px',borderRadius:12,background:'#fff4e5',color:'#7a3f00'}}>
+          <strong>{saveStatus.state==='blocked'?'存檔需要處理':'尚未儲存'}</strong>
+          <span>｜{saveStatus.message} {saveStatus.lastYear!==null?`最後成功存檔：第 ${saveStatus.lastYear} 年。`:''}</span>
+          <button style={{marginLeft:12}} onClick={saveStatus.state==='blocked'&&saveStatus.lastYear===null?handleRecoverLegacyPolicies:handleSave}>{saveStatus.state==='blocked'&&saveStatus.lastYear===null?'修復舊保單':'重試儲存'}</button>
+        </div>}
 
         <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>資產總表</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
         {mainView === 'game' ? <>
@@ -1243,9 +949,9 @@ export default function Page() {
                     {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
                       <div className="shop-label">目前持有倉位</div>
                       {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
-                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceSurrenderValue(holding.amount,holding.premiumTerm,py,marketSignals),paid=holding.premiumsPaid||1,irr=policyIrr(holding.amount,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
+                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceValue(holding,game.age,marketSignals),paid=holding.premiumsPaid||1,premium=holding.annualPremium??holding.amount,irr=policyIrr(premium,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
                           <div className="insurance-policy-head"><div><strong>{holding.label.split('｜')[0]}</strong><small>保單年度 第 {py} 年 · 供款 {paid}/{holding.premiumTerm} 年</small></div><b>退保價值 NT${roundMoney(sv).toLocaleString('en-US')}</b></div>
-                          <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(holding.amount*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
+                          <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(premium*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR（近似）</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
                           <div className="insurance-withdraw"><label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="單次提取金額" value={insuranceWithdrawals[holding.id]||''} onChange={(e)=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><button onClick={()=>withdrawInsurance(holding.id)}>單次提取</button></div>
                           <div className="insurance-plan"><strong>年度提取計畫</strong><label><span>提取方式</span><select value={insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed'} onChange={e=>setInsuranceWithdrawalModes(x=>({...x,[holding.id]:e.target.value as 'fixed'|'percent'}))}><option value="fixed">每年固定金額</option><option value="percent">每年按總預定保費比例</option></select></label><label><span>開始保單年度</span><input inputMode="numeric" value={insuranceWithdrawalStartYears[holding.id]||holding.withdrawalStartYear||6} onChange={e=>setInsuranceWithdrawalStartYears(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>{(insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed')==='fixed'?<label><span>每年提取 NT$</span><input inputMode="numeric" value={insuranceWithdrawals[holding.id]||holding.withdrawalAmount||''} onChange={e=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>:<label><span>總預定保費比例 %</span><input inputMode="decimal" value={insuranceWithdrawalPercents[holding.id]||holding.withdrawalPercent||''} onChange={e=>setInsuranceWithdrawalPercents(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9.]/g,'')}))}/></label>}<div><button onClick={()=>setInsuranceWithdrawalPlan(holding.id)}>設定年度提取</button>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<button onClick={()=>cancelInsuranceWithdrawalPlan(holding.id)}>取消計畫</button>}</div>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<small>已啟用：第 {holding.withdrawalStartYear} 年起 · 累計已提取 NT${roundMoney(holding.cumulativeWithdrawals||0).toLocaleString('en-US')}</small>}</div>
                           <small>達成率依市場訊號平滑模擬於 90%～105%，只作用於非保證利益；此區間為 TIME 模型設定。</small>
@@ -1383,7 +1089,7 @@ export default function Page() {
           })}
           <div className="market-year-trades"><div className="panel-header compact"><h2>當年度買賣紀錄</h2><span>{selectedTrades.length} 筆</span></div>{selectedTrades.length===0?<p>這個年度沒有股票或債券交易。</p>:<div className="market-trade-scroll">{selectedTrades.map((t,i)=><div className="market-trade-row" key={i}><strong>{t.side}｜{t.label}</strong><span>{t.quantity} {t.asset==='stocks'?'股':'張'} · {t.price.toFixed(2)}</span><em>NT{roundMoney(t.amount).toLocaleString('en-US')}</em></div>)}</div>}</div>
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
-          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,selectedSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
+          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,selectedSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(selectedMarket?.bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
               {[
                 ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
                 ['flow','籌碼面',signalLabel(research.flow,'需求偏強','需求偏弱')],
@@ -1391,7 +1097,7 @@ export default function Page() {
                 ['rate','利率面',signalLabel(research.rate,'有利','不利')],
               ].map(([key,label,status])=><button key={key} onClick={()=>{
                 const bodies:Record<string,React.ReactNode>={
-                  fundamental:<><p>景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
+                  fundamental:<><p>景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 信用利差 {(selectedSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
                   flow:<><p>{signalLabel(-selectedSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>目前避險資金需求有限，債券買盤沒有明顯增強。若市場風險升高，高品質政府債可能獲得較多資金支持。</p></>,
                   news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>近期央行、通膨與信用消息整體影響有限。若出現升息、降評級或通膨升溫，債券價格可能面臨較大壓力。</p></>,
                   rate:<><p>政策利率 {(selectedSignals.policyRate*100).toFixed(1)}% · 通膨 {(selectedSignals.inflation*100).toFixed(1)}%</p><p>目前利率水準對既有債券價格形成一定壓力。若利率繼續上升，長天期債券通常會比短天期債券承受更大的價格波動。</p></>
