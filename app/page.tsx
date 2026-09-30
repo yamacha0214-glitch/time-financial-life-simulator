@@ -2,8 +2,167 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const STORAGE_KEY = 'time-financial-life-simulator-v1';
+const STORAGE_KEY = 'time-financial-life-simulator-v2';
+const HOLDINGS_KEY = 'time-financial-life-simulator-v2-holdings';
 const ASSET_KEYS = ['cash', 'deposit', 'bonds', 'stocks', 'realEstate', 'insurance'] as const;
+
+// Participating-policy baseline calibrated from the supplied real benefit illustration.
+// Values are surrender-value / total scheduled premium ratios. Intermediate years are interpolated.
+// This is a generic TIME simulation curve, not a quotation for any insurer or policy.
+const INSURANCE_SURRENDER_CURVE: Array<[number, number]> = [
+  [1,0],[2,0],[3,0.26551],[4,0.409685],[5,0.58069],[10,1.255865],[15,1.74045],[20,2.54057],[25,3.53179],[30,4.9976],
+  [43,11.24431],[48,15.92205],[53,22.835625],[58,33.086535],[63,44.14993],[68,59.457],[73,79.3135]
+];
+const insuranceCurveRatio=(policyYear:number)=>{
+  const y=Math.max(1,policyYear);
+  const exact=INSURANCE_SURRENDER_CURVE.find(([year])=>year===y); if(exact)return exact[1];
+  const upper=INSURANCE_SURRENDER_CURVE.find(([year])=>year>y);
+  if(!upper)return INSURANCE_SURRENDER_CURVE[INSURANCE_SURRENDER_CURVE.length-1][1];
+  const ui=INSURANCE_SURRENDER_CURVE.indexOf(upper), lower=INSURANCE_SURRENDER_CURVE[Math.max(0,ui-1)];
+  const t=(y-lower[0])/(upper[0]-lower[0]); return lower[1]+(upper[1]-lower[1])*t;
+};
+// TIME modelling assumption: keep fulfilment in a relatively narrow 90%-105% band.
+// GL16 defines/discloses fulfilment ratios; GL34 requires fair/sustainable bonus governance and smoothing.
+// Neither guideline itself prescribes this numeric band.
+const insuranceFulfillment=(signals:MarketSignals)=>clamp(1+(signals.growth-0.025)*0.65-(signals.creditSpread-0.018)*0.8+signals.news*0.018,0.90,1.05);
+const policyIrr=(annualPremium:number,paid:number,policyYear:number,value:number,cumulativeWithdrawals=0)=>{
+  if(paid<=0||policyYear<=0||value<=0)return null;
+  // Premiums are paid annually from policy year 1; surrender value is received at the current policy year.
+  // Historical withdrawals are approximated as received at the current valuation date until yearly withdrawal cash flows are stored separately.
+  const npv=(rate:number)=>{
+    let total=0;
+    for(let payment=0;payment<paid;payment++) total-=annualPremium/Math.pow(1+rate,payment);
+    total+=(value+cumulativeWithdrawals)/Math.pow(1+rate,policyYear);
+    return total;
+  };
+  let lo=-0.99,hi=0.50;
+  if(npv(lo)*npv(hi)>0)return null;
+  for(let n=0;n<100;n++){const mid=(lo+hi)/2;if(npv(mid)>0)lo=mid;else hi=mid;}
+  return (lo+hi)/2;
+};
+const insuranceSurrenderValue=(annualPremium:number,premiumTerm:number,policyYear:number,signals:MarketSignals)=>{
+  const scheduledPremium=annualPremium*premiumTerm;
+  const base=scheduledPremium*insuranceCurveRatio(policyYear);
+  // Early values stay close to the illustration; market effects gradually affect the non-guaranteed portion.
+  const nonGuaranteedWeight=clamp((policyYear-2)/18,0,0.88);
+  return Math.max(0,base*((1-nonGuaranteedWeight)+nonGuaranteedWeight*insuranceFulfillment(signals)));
+};
+const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
+const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
+const MARKET_MODEL_VERSION = 6;
+
+type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string };
+type MarketTrade = { year:number; age:number; asset:'stocks'|'bonds'; productId:string; label:string; side:'買入'|'賣出'; quantity:number; price:number; amount:number };
+type MarketSnapshot = { year:number; age:number; signals:MarketSignals; stockPrices:Record<string,number>; stockPaths:Record<string,number[]>; bondPrices:Record<string,number> };
+type PropertyListing = { id:string; name:string; district:string; ping:number; price:number; marketRent:number; demand:number; populationTrend:number; birthRate:number; downPaymentRate:number; mortgageRate:number; mortgageYears:number };
+type PropertyHolding = PropertyListing & { boughtAge:number; purchasePrice:number; mortgageBalance:number; monthlyRent:number; rentalMode:'vacant'|'rent'; lastRentedMonths:number; lastRentalIncome:number; currentValue:number };
+const PROPERTY_TEMPLATES = [
+  {name:'都會捷運小宅',district:'核心都會區',ping:18.6,basePrice:3200000,marketRent:18500,demand:0.88,populationTrend:0.012,birthRate:0.0078},
+  {name:'成熟商圈兩房',district:'都會生活圈',ping:24.8,basePrice:4200000,marketRent:23500,demand:0.82,populationTrend:0.006,birthRate:0.0084},
+  {name:'郊區家庭宅',district:'外圍住宅區',ping:32.5,basePrice:3600000,marketRent:20500,demand:0.68,populationTrend:-0.004,birthRate:0.0091},
+  {name:'新興重劃小宅',district:'新興重劃區',ping:21.2,basePrice:2900000,marketRent:16800,demand:0.73,populationTrend:0.018,birthRate:0.0102},
+  {name:'衛星城市三房',district:'衛星城市',ping:36.8,basePrice:3900000,marketRent:22000,demand:0.64,populationTrend:-0.008,birthRate:0.0096},
+];
+const buildPropertyMarket=(signals:MarketSignals,year=0):PropertyListing[]=>PROPERTY_TEMPLATES.map((p,i)=>{
+  const cycle=1+signals.growth*1.4-signals.policyRate*0.55+p.populationTrend*2+stableNoise('property|'+year+'|'+i,0.055);
+  const price=Math.round(p.basePrice*cycle/10000)*10000;
+  return {id:'property-'+year+'-'+i,name:p.name,district:p.district,ping:p.ping,price,marketRent:p.marketRent,demand:p.demand,populationTrend:p.populationTrend,birthRate:p.birthRate,downPaymentRate:0.2,mortgageRate:Math.max(0.018,signals.policyRate*0.55+0.012),mortgageYears:30};
+}).filter((_,i)=>stableNoise('release|'+year+'|'+i,1)>-0.45).slice(0,4);
+
+type MarketSignals = {
+  growth: number; inflation: number; policyRate: number; riskAppetite: number;
+  earnings: number; flows: number; news: number; creditSpread: number;
+};
+
+const buildMarketSignals = (): MarketSignals => ({
+  growth: -0.01 + Math.random()*0.055,
+  inflation: 0.012 + Math.random()*0.045,
+  policyRate: 0.01 + Math.random()*0.05,
+  riskAppetite: -1 + Math.random()*2,
+  earnings: -0.08 + Math.random()*0.24,
+  flows: -1 + Math.random()*2,
+  news: -1 + Math.random()*2,
+  creditSpread: 0.006 + Math.random()*0.035,
+});
+
+const buildAnnualReport = (year:number, age:number, x:MarketSignals):AnnualReport => {
+  const events=[
+    {label:'總體經濟',text:`經濟成長 ${(x.growth*100).toFixed(1)}%，景氣${x.growth>0.025?'偏強':x.growth<0.008?'偏弱':'溫和'}。`},
+    {label:'物價環境',text:`通膨率 ${(x.inflation*100).toFixed(1)}%，${x.inflation>0.04?'物價壓力明顯':'物價壓力相對溫和'}。`},
+    {label:'央行政策',text:`政策利率 ${(x.policyRate*100).toFixed(1)}%，${x.policyRate>0.04?'資金成本偏高':'資金成本相對溫和'}。`},
+    {label:'企業獲利',text:`企業獲利成長 ${x.earnings>=0?'+':''}${(x.earnings*100).toFixed(1)}%，${x.earnings>=0?'企業獲利整體成長':'企業獲利整體衰退'}。`},
+    {label:'市場資金',text:`${signalLabel(x.flows,'資金偏流入','資金偏流出')}，市場風險偏好為 ${signalLabel(x.riskAppetite,'偏高','偏低')}。`},
+    {label:'市場消息',text:`政策、產業與信用消息整體${signalLabel(x.news,'偏正面','偏負面')}，信用利差 ${(x.creditSpread*100).toFixed(1)}%。`}
+  ];
+  const summary=`本年度景氣${x.growth>0.025?'較強':x.growth<0.008?'較弱':'溫和'}、通膨${x.inflation>0.04?'偏高':'相對穩定'}，利率${x.policyRate>0.04?'維持高檔':'壓力有限'}；企業獲利${x.earnings>=0?'成長':'轉弱'}，資金${x.flows>0.3?'偏向流入風險資產':x.flows<-0.3?'偏向撤出風險資產':'方向不明顯'}。不同訊號可能同時互相矛盾，市場價格不一定只受單一因素影響。`;
+  return {year,age,signals:x,events,summary};
+};
+
+const signalLabel = (v:number, good='偏強', bad='偏弱') => v > 0.3 ? good : v < -0.3 ? bad : '中性';
+const productNoise = (scale=1) => (Math.random()+Math.random()-1)*scale;
+const stableNoise = (key:string, scale=1) => {
+  let h=2166136261;
+  for(let i=0;i<key.length;i++){h^=key.charCodeAt(i);h=Math.imul(h,16777619)}
+  return ((((h>>>0)%10000)/9999)*2-1)*scale;
+};
+const stockResearch = (id:string, signals:MarketSignals, hist:number[]) => {
+  const techBias = id === 'stock-tech' ? 0.06 : id === 'stock-dividend' ? -0.025 : 0;
+  const dividendBias = id === 'stock-dividend' ? 0.06 : 0;
+  const seed=id+'|'+signals.growth.toFixed(4)+'|'+signals.inflation.toFixed(4)+'|'+signals.policyRate.toFixed(4)+'|'+signals.earnings.toFixed(4)+'|'+signals.flows.toFixed(4)+'|'+signals.news.toFixed(4)+'|'+signals.riskAppetite.toFixed(4)+'|'+hist.length;
+  const fundamental = signals.earnings + signals.growth*1.4 - signals.policyRate*0.45 + techBias + stableNoise(seed+'|fundamental',0.18);
+  const flow = signals.flows*0.55 + signals.riskAppetite*(id==='stock-tech'?0.35:0.18) + stableNoise(seed+'|flow',0.65);
+  const news = signals.news*0.45 + dividendBias + stableNoise(seed+'|news',0.8);
+  const recent = hist.length>2 ? hist[hist.length-1]/hist[Math.max(0,hist.length-7)]-1 : 0;
+  const technical = recent*4 + stableNoise(seed+'|technical',0.55);
+  return {fundamental,flow,news,technical};
+};
+const bondResearch = (id:string, signals:MarketSignals) => {
+  const seed=id+'|'+signals.growth.toFixed(4)+'|'+signals.inflation.toFixed(4)+'|'+signals.policyRate.toFixed(4)+'|'+signals.news.toFixed(4)+'|'+signals.riskAppetite.toFixed(4)+'|'+signals.creditSpread.toFixed(4);
+  return {
+    fundamental:(id==='bond-corp'?signals.growth*3-signals.creditSpread*4:-signals.inflation*1.2)+stableNoise(seed+'|fundamental',0.25),
+    flow:-signals.riskAppetite*0.45+stableNoise(seed+'|flow',0.65),
+    news:signals.news*(id==='bond-corp'?0.6:0.25)+stableNoise(seed+'|news',0.65),
+    rate:(0.035-signals.policyRate)*12+stableNoise(seed+'|rate',0.25),
+  };
+};
+
+
+const buildPreGameMarket = () => {
+  const signals = buildMarketSignals();
+  const stockPrices: Record<string, number> = {};
+  const stockPriceHistory: Record<string, number[]> = {};
+  Object.entries(STOCK_INITIAL_PRICES).forEach(([id, base]) => {
+    const profile = id === 'stock-tech'
+      ? { drift: 0.10, vol: 0.24, fundamental: 1.35, flow: 1.15 }
+      : id === 'stock-dividend'
+        ? { drift: 0.055, vol: 0.12, fundamental: 0.75, flow: 0.7 }
+        : { drift: 0.07, vol: 0.16, fundamental: 1.0, flow: 0.9 };
+    const fundamentalImpact = (signals.growth*0.9 + signals.earnings*0.55 - Math.max(0,signals.policyRate-0.025)*0.8) * profile.fundamental;
+    const flowImpact = signals.flows * 0.035 * profile.flow;
+    const newsImpact = signals.news * 0.045;
+    const sentimentImpact = signals.riskAppetite * 0.03;
+    const idiosyncratic = productNoise(id === 'stock-tech' ? 0.10 : 0.065);
+      const signalDrift = profile.drift + fundamentalImpact*0.62 + flowImpact*0.55 + newsImpact*0.45 + sentimentImpact*0.5 + idiosyncratic;
+    let price = base;
+    const path = [price];
+    for (let month = 0; month < 12; month++) {
+      const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
+      price = Math.max(5, price * (1 + signalDrift/12 + shock));
+      path.push(price);
+    }
+    stockPrices[id] = price;
+    stockPriceHistory[id] = path;
+  });
+  const rateShock = (Math.random()-0.5)*0.018 + (signals.inflation-0.025)*0.15;
+  const bondPrices: Record<string, number> = {};
+  Object.entries(BOND_INITIAL_PRICES).forEach(([id, base]) => {
+    const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
+    const creditShock = id === 'bond-corp' ? -(signals.creditSpread-0.018)*1.8 + signals.news*0.012 : signals.news*0.003;
+    bondPrices[id] = clamp(base * (1-duration*rateShock+creditShock),65,125);
+  });
+  return { stockPrices, stockPriceHistory, bondPrices, signals, preGameReport: buildAnnualReport(0, 24, signals) };
+};
+
 type AssetKey = (typeof ASSET_KEYS)[number];
 type Portfolio = Record<AssetKey, number>;
 type Allocation = Record<AssetKey, number>;
@@ -36,6 +195,10 @@ type HistoryEntry = {
   real: number;
   liquidity: number;
   eventTitle: string;
+  portfolio?: Portfolio;
+  returnRate?: number;
+  actions?: string[];
+  changes?: string[];
 };
 
 type PendingChoice = {
@@ -74,21 +237,21 @@ type GameState = {
 };
 
 const BASE_PORTFOLIO: Portfolio = {
-  cash: 250000,
-  deposit: 200000,
-  bonds: 150000,
-  stocks: 200000,
-  realEstate: 150000,
-  insurance: 50000,
+  cash: 1000000,
+  deposit: 0,
+  bonds: 0,
+  stocks: 0,
+  realEstate: 0,
+  insurance: 0,
 };
 
 const START_ALLOCATIONS: Allocation = {
-  cash: 25,
-  deposit: 20,
-  bonds: 15,
-  stocks: 20,
-  realEstate: 15,
-  insurance: 5,
+  cash: 100,
+  deposit: 0,
+  bonds: 0,
+  stocks: 0,
+  realEstate: 0,
+  insurance: 0,
 };
 
 const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: number }> = {
@@ -96,27 +259,9 @@ const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: nu
   deposit: { label: '定存', short: 'Deposit', liquidity: 0.95 },
   bonds: { label: '債券', short: 'Bonds', liquidity: 0.8 },
   stocks: { label: '股票', short: 'Stocks', liquidity: 0.7 },
-  realEstate: { label: '房地產', short: 'Real Estate', liquidity: 0.35 },
-  insurance: { label: '長期保險', short: 'Insurance', liquidity: 0.2 },
+  realEstate: { label: '房地產', short: 'Real Estate · 低流動性', liquidity: 0.35 },
+  insurance: { label: '長期保險', short: 'Insurance · 長期契約', liquidity: 0.2 },
 };
-
-const MARKET_EVENTS: MarketEvent[] = [
-  { title: '全球牛市', blurb: '科技與企業信心回升，股市走高。', effect: { stocks: 0.25 }, type: 'bull' },
-  { title: '全球金融危機', blurb: '信貸市場收縮，風險資產遭受重擊。', effect: { stocks: -0.42, realEstate: -0.15 }, type: 'crisis' },
-  { title: '央行快速升息', blurb: '利率快速上升，債券價格下滑，房市承壓。', effect: { bonds: -0.12, realEstate: -0.08, deposit: 0.12 }, type: 'rate' },
-  { title: '高通膨', blurb: '物價節節攀升，購買力受到壓迫。', effect: { cash: -0.07 }, type: 'inflation' },
-  { title: '經濟衰退', blurb: '企業獲利放緩，失業率上升，資產價格承壓。', effect: { stocks: -0.22, realEstate: -0.12 }, type: 'recession' },
-  { title: '房市熱潮', blurb: '購屋需求強勁，房價上揚。', effect: { realEstate: 0.18 }, type: 'bull' },
-  { title: '科技龍頭表現強勁', blurb: '大型科技股帶動市場情緒。', effect: { stocks: 0.19 }, type: 'bull' },
-  { title: '信用緊縮', blurb: '債券市場開始要求更高風險溢酬。', effect: { bonds: -0.18, stocks: -0.1 }, type: 'crisis' },
-  { title: '大宗商品上漲', blurb: '能源與原物料拉高通膨壓力。', effect: { cash: -0.08, realEstate: 0.04 }, type: 'inflation' },
-  { title: '政策刺激', blurb: '政府與央行放水，資產市場回暖。', effect: { stocks: 0.14, bonds: 0.06 }, type: 'bull' },
-  { title: '債券殖利率急升', blurb: '長債價格下降，但定存收益變好。', effect: { bonds: -0.2, deposit: 0.14 }, type: 'rate' },
-  { title: '匯率震盪', blurb: '出口產業受益，但消費壓力增加。', effect: { stocks: 0.08, realEstate: -0.05 }, type: 'recession' },
-  { title: '消費者信心改善', blurb: '民間消費重啟，企業獲利回升。', effect: { stocks: 0.16, realEstate: 0.07 }, type: 'bull' },
-  { title: '地產交易稀少', blurb: '市場觀望情緒強，房價壓力加大。', effect: { realEstate: -0.2 }, type: 'recession' },
-  { title: '穩定成長環境', blurb: '景氣緩步回升，各資產輪動呈現平衡。', effect: { bonds: 0.06, stocks: 0.1, realEstate: 0.04 }, type: 'bull' },
-];
 
 const LIFE_EVENTS: LifeEvent[] = [
   { title: '出國進修', description: '你決定在 29 歲前往海外進修，開始一段學術旅程。', expense: 400000, requiredChoice: false },
@@ -212,8 +357,8 @@ const buildInitialState = (): GameState => ({
   year: 1,
   portfolio: { ...BASE_PORTFOLIO },
   allocations: { ...START_ALLOCATIONS },
-  income: getAnnualIncome(25),
-  expense: getAnnualExpense(25),
+  income: 0,
+  expense: 0,
   lifeStatus: '你已經開始人生資產旅程。',
   inflationRate: 0.025,
   cumulativeInflation: 0.025,
@@ -255,6 +400,37 @@ const asyncLoadGame = () => {
 export default function Page() {
   const [game, setGame] = useState<GameState>(buildInitialState);
   const [isMounted, setIsMounted] = useState(false);
+  const [productAmounts, setProductAmounts] = useState<Record<string, string>>({});
+  const [productHoldings, setProductHoldings] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number; withdrawalMode?: 'none'|'fixed'|'percent'; withdrawalAmount?: number; withdrawalPercent?: number; withdrawalStartYear?: number; cumulativeWithdrawals?: number }>>([]);
+  const [productHistory, setProductHistory] = useState<Array<{ id: string; productId: string; asset: Exclude<AssetKey, 'cash'>; label: string; amount: number; boughtAge: number; premiumTerm?: number; premiumsPaid?: number; buyPrice?: number; shares?: number; bondUnits?: number; faceValue?: number; maturityYears?: number; couponRate?: number }>>([]);
+  const [holdingView, setHoldingView] = useState<'current' | 'history'>('current');
+  const [insuranceWithdrawals, setInsuranceWithdrawals] = useState<Record<string,string>>({});
+  const [insuranceWithdrawalModes, setInsuranceWithdrawalModes] = useState<Record<string,'fixed'|'percent'>>({});
+  const [insuranceWithdrawalPercents, setInsuranceWithdrawalPercents] = useState<Record<string,string>>({});
+  const [insuranceWithdrawalStartYears, setInsuranceWithdrawalStartYears] = useState<Record<string,string>>({});
+  const [mainView, setMainView] = useState<'game' | 'market'>('game');
+  const [initialMarket] = useState(buildPreGameMarket);
+  const [stockPrices, setStockPrices] = useState<Record<string, number>>(initialMarket.stockPrices);
+  const [stockPriceHistory, setStockPriceHistory] = useState<Record<string, number[]>>(initialMarket.stockPriceHistory);
+  const [stockTradeShares, setStockTradeShares] = useState<Record<string, string>>({});
+  const [bondPrices, setBondPrices] = useState<Record<string, number>>(initialMarket.bondPrices);
+  const [bondTradeUnits, setBondTradeUnits] = useState<Record<string, string>>({});
+  const [marketSignals, setMarketSignals] = useState<MarketSignals>(initialMarket.signals);
+  const [annualReports, setAnnualReports] = useState<AnnualReport[]>([initialMarket.preGameReport]);
+  const [reportOpen, setReportOpen] = useState<number | null>(null);
+  const [marketYear, setMarketYear] = useState<number | null>(null);
+  const [marketSnapshots, setMarketSnapshots] = useState<MarketSnapshot[]>([{year:0,age:24,signals:initialMarket.signals,stockPrices:initialMarket.stockPrices,stockPaths:initialMarket.stockPriceHistory,bondPrices:initialMarket.bondPrices}]);
+  const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
+  const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
+  const [chartHover, setChartHover] = useState<{id:string; index:number} | null>(null);
+  const [chartStartYear, setChartStartYear] = useState(0);
+  const [propertyListings, setPropertyListings] = useState<PropertyListing[]>(()=>buildPropertyMarket(initialMarket.signals,0));
+  const [propertyHoldings, setPropertyHoldings] = useState<PropertyHolding[]>([]);
+  const [rentInputs, setRentInputs] = useState<Record<string,string>>({});
+  const toggleResearch = (key:string, title:string, body:React.ReactNode) => {
+    if (researchOverlay?.key===key) setResearchOverlay(null);
+    else setResearchOverlay({key,title,body});
+  };
 
   useEffect(() => {
     setIsMounted(true);
@@ -262,6 +438,34 @@ export default function Page() {
     if (saved) {
       setGame({ ...saved, pendingChoice: null, completed: false });
     }
+    try {
+      const savedProducts = window.localStorage.getItem(HOLDINGS_KEY);
+      if (savedProducts) {
+        const parsed = JSON.parse(savedProducts);
+        if (Array.isArray(parsed.holdings)) setProductHoldings(parsed.holdings);
+        if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
+        if (Array.isArray(parsed.marketSnapshots) && parsed.marketSnapshots.length) setMarketSnapshots(parsed.marketSnapshots);
+        if (Array.isArray(parsed.marketTrades)) setMarketTrades(parsed.marketTrades);
+        if (Array.isArray(parsed.propertyListings)) setPropertyListings(parsed.propertyListings);
+        if (Array.isArray(parsed.propertyHoldings)) setPropertyHoldings(parsed.propertyHoldings);
+        const hasSavedReports = Array.isArray(parsed.annualReports) && parsed.annualReports.length > 0;
+        if (hasSavedReports) setAnnualReports(parsed.annualReports);
+        if (parsed.marketModelVersion === MARKET_MODEL_VERSION) {
+          if (parsed.stockPrices) setStockPrices(parsed.stockPrices);
+          if (parsed.stockPriceHistory) setStockPriceHistory(parsed.stockPriceHistory);
+          if (parsed.bondPrices) setBondPrices(parsed.bondPrices);
+          if (parsed.marketSignals) setMarketSignals(parsed.marketSignals);
+        } else {
+          // Migrate old preview saves that used the obsolete all-100 market model.
+          const migratedMarket = buildPreGameMarket();
+          setStockPrices(migratedMarket.stockPrices);
+          setStockPriceHistory(migratedMarket.stockPriceHistory);
+          setBondPrices(migratedMarket.bondPrices);
+          setMarketSignals(migratedMarket.signals);
+          if (!hasSavedReports) setAnnualReports([migratedMarket.preGameReport]);
+        }
+      }
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -269,32 +473,216 @@ export default function Page() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
   }, [game, isMounted]);
 
+  useEffect(() => {
+    if (!isMounted) return;
+    window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, marketModelVersion: MARKET_MODEL_VERSION }));
+  }, [productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, isMounted]);
+
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
   const liquidity = useMemo(() => getLiquidity(game.portfolio), [game.portfolio]);
-  const allocationList = useMemo(() => ASSET_KEYS.map((asset) => ({ asset, percentage: game.allocations[asset], amount: totalAssets * (game.allocations[asset] / 100) })), [game.allocations, totalAssets]);
+  // V2 display ratios always come from the CURRENT portfolio values.
+  // Never use the old target-allocation percentages for holdings display.
+  const allocationList = useMemo(() => ASSET_KEYS.map((asset) => ({
+    asset,
+    percentage: totalAssets > 0 ? (game.portfolio[asset] / totalAssets) * 100 : 0,
+    amount: game.portfolio[asset],
+  })), [game.portfolio, totalAssets]);
 
-  const updateAllocationAmount = (asset: AssetKey, rawValue: string) => {
-    if (game.completed) return;
-    const cleaned = rawValue.replace(/[^0-9]/g, '');
-    const amount = cleaned === '' ? 0 : Number(cleaned);
+  // V2 holdings are transaction-driven. Current cash is a balance, not a target
+  // allocation input, so it must never be editable directly.
 
-    setGame((current) => {
-      const total = sumPortfolio(current.portfolio);
-      if (total <= 0) return current;
 
-      // The player enters actual NT$ amounts. We convert that amount to a target
-      // allocation percentage without silently changing any other asset.
-      const nextPercent = clamp((amount / total) * 100, 0, 100);
-      return {
-        ...current,
-        allocations: {
-          ...current.allocations,
-          [asset]: nextPercent,
-        },
-      };
-    });
+  const productCatalog: Record<Exclude<AssetKey, 'cash'>, Array<{ id: string; label: string }>> = {
+    deposit: [{ id: 'deposit-1', label: '一年期定存｜2.0%｜1年到期' }, { id: 'deposit-3', label: '三年期定存｜2.4%｜3年到期' }],
+    bonds: [{ id: 'bond-5', label: '5年期政府債券 A｜年息2.8%｜每年付息' }, { id: 'bond-10', label: '10年期政府債券 B｜年息3.2%｜每年付息' }, { id: 'bond-corp', label: '7年期投資級公司債 C｜年息4.1%｜每年付息' }],
+    stocks: [{ id: 'stock-world', label: '全球股票 ETF｜股息率約2.0%' }, { id: 'stock-tech', label: '科技成長 ETF｜股息率約0.8%' }, { id: 'stock-dividend', label: '高股息 ETF｜股息率約4.0%' }],
+    realEstate: [],
+    insurance: [{ id: 'policy-5', label: '5年繳長期分紅保單｜早期流動性低' }, { id: 'policy-10', label: '10年繳長期分紅保單｜長期累積' }],
   };
+
+  const buyProperty = (listing:PropertyListing) => {
+    const downPayment = listing.price * listing.downPaymentRate;
+    if (game.portfolio.cash < downPayment) return alert('現金不足以支付頭期款');
+    const mortgage = listing.price - downPayment;
+    setPropertyHoldings((current) => [...current, {
+      ...listing,
+      boughtAge: game.age,
+      purchasePrice: listing.price,
+      mortgageBalance: mortgage,
+      monthlyRent: listing.marketRent,
+      rentalMode: 'vacant',
+      lastRentedMonths: 0,
+      lastRentalIncome: 0,
+      currentValue: listing.price,
+    }]);
+    setPropertyListings((current) => current.filter((property) => property.id !== listing.id));
+    setGame((current) => ({
+      ...current,
+      portfolio: {
+        ...current.portfolio,
+        cash: current.portfolio.cash - downPayment,
+        realEstate: current.portfolio.realEstate + downPayment,
+      },
+      eventHistory: [...current.eventHistory, '買入房產：' + listing.name + '，總價 NT$' + listing.price.toLocaleString('en-US') + '，頭期 NT$' + roundMoney(downPayment).toLocaleString('en-US') + '。'],
+      lifeStatus: '已購入 ' + listing.name + '，房貸將逐年攤還。',
+    }));
+  };
+
+  const setPropertyRental = (id:string, mode:'vacant'|'rent') => {
+    const requested = Number(rentInputs[id] || 0);
+    setPropertyHoldings((current) => current.map((property) => property.id !== id ? property : {
+      ...property,
+      rentalMode: mode,
+      monthlyRent: mode === 'rent' && requested > 0 ? requested : property.monthlyRent,
+    }));
+  };
+
+  const sellProperty = (id:string) => {
+    const property = propertyHoldings.find((item) => item.id === id);
+    if (!property) return;
+    const equity = Math.max(0, property.currentValue - property.mortgageBalance);
+    setPropertyHoldings((current) => current.filter((item) => item.id !== id));
+    setGame((current) => ({
+      ...current,
+      portfolio: {
+        ...current.portfolio,
+        cash: current.portfolio.cash + equity,
+        realEstate: Math.max(0, current.portfolio.realEstate - equity),
+      },
+      eventHistory: [...current.eventHistory, '出售房產：' + property.name + '，清償剩餘房貸後回收 NT$' + roundMoney(equity).toLocaleString('en-US') + '。'],
+      lifeStatus: '已出售 ' + property.name + '。',
+    }));
+  };
+
+  const buyProduct = (asset: Exclude<AssetKey, 'cash'>, productId: string) => {
+    const requestedShares = asset === 'stocks' ? Number(stockTradeShares[productId] || 0) : 0;
+    const requestedBondUnits = asset === 'bonds' ? Number(bondTradeUnits[productId] || 0) : 0;
+    const marketPrice = asset === 'stocks' ? (stockPrices[productId] || 100) : 0;
+    const bondQuote = asset === 'bonds' ? (bondPrices[productId] || 100) : 0;
+    const bondFaceValue = 10000;
+    const amount = asset === 'stocks' ? requestedShares * marketPrice : asset === 'bonds' ? requestedBondUnits * bondFaceValue * bondQuote / 100 : Number(productAmounts[productId] || 0);
+    if (asset === 'stocks' && (!Number.isInteger(requestedShares) || requestedShares <= 0)) return alert('請輸入要買入的整數股數');
+    if (asset === 'bonds' && (!Number.isInteger(requestedBondUnits) || requestedBondUnits <= 0)) return alert('請輸入要買入的債券張數');
+    if (asset !== 'stocks' && asset !== 'bonds' && amount <= 0) return alert('請先輸入投入金額');
+    if (amount > game.portfolio.cash) return alert('現金不足');
+    setGame((current) => {
+      const nextPortfolio = { ...current.portfolio, cash: current.portfolio.cash - amount, [asset]: current.portfolio[asset] + amount };
+      const total = sumPortfolio(nextPortfolio);
+      const nextAllocations = { ...current.allocations };
+      ASSET_KEYS.forEach((key) => { nextAllocations[key] = total > 0 ? (nextPortfolio[key] / total) * 100 : 0; });
+      return { ...current, portfolio: nextPortfolio, allocations: nextAllocations, lifeStatus: `已購買商品，投入 NT${roundMoney(amount).toLocaleString('en-US')}。投入後不可直接修改本金。` };
+    });
+    const product = productCatalog[asset].find((item) => item.id === productId);
+    if (product) {
+      const premiumTerm = productId === 'policy-5' ? 5 : productId === 'policy-10' ? 10 : undefined;
+      const price = asset === 'stocks' ? (stockPrices[productId] || 100) : asset === 'bonds' ? (bondPrices[productId] || 100) : undefined;
+      const maturityYears = productId === 'bond-5' ? 5 : productId === 'bond-10' ? 10 : productId === 'bond-corp' ? 7 : undefined;
+      const couponRate = productId === 'bond-5' ? 0.028 : productId === 'bond-10' ? 0.032 : productId === 'bond-corp' ? 0.041 : undefined;
+      const purchase = { id: `${productId}-${Date.now()}`, productId, asset, label: product.label, amount, boughtAge: game.age, premiumTerm, premiumsPaid: premiumTerm ? 1 : undefined, buyPrice: price, shares: asset === 'stocks' ? requestedShares : undefined, bondUnits: asset === 'bonds' ? requestedBondUnits : undefined, faceValue: asset === 'bonds' ? 10000 : undefined, maturityYears, couponRate };
+      setProductHoldings((current) => [...current, purchase]);
+      setProductHistory((current) => [...current, purchase]);
+      if (asset==='stocks' || asset==='bonds') setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset,productId,label:product.label.split('｜')[0],side:'買入',quantity:asset==='stocks'?requestedShares:requestedBondUnits,price:price||0,amount}]);
+    }
+    setProductAmounts((current) => ({ ...current, [productId]: '' }));
+    if (asset === 'stocks') setStockTradeShares((current) => ({ ...current, [productId]: '' }));
+    if (asset === 'bonds') setBondTradeUnits((current) => ({ ...current, [productId]: '' }));
+  };
+
+  const withdrawInsurance = (holdingId:string) => {
+    const holding=productHoldings.find((h)=>h.id===holdingId&&h.asset==='insurance');
+    if(!holding?.premiumTerm)return;
+    const requested=Number(insuranceWithdrawals[holdingId]||0);
+    if(requested<=0)return alert('請輸入提取金額');
+    const policyYear=Math.max(1,game.age-holding.boughtAge+1);
+    const currentValue=insuranceSurrenderValue(holding.amount,holding.premiumTerm,policyYear,marketSignals);
+    if(requested>currentValue)return alert('提取金額不能高於目前退保價值');
+    // Withdrawal reduces the policy's future economic base proportionally. This is a TIME simplification
+    // calibrated to the supplied withdrawal illustrations, not a contractual rule of any named product.
+    const remainingRatio=Math.max(0,(currentValue-requested)/Math.max(1,currentValue));
+    setProductHoldings((current)=>current.flatMap((h)=>h.id!==holdingId?[h]:remainingRatio<=0?[]:[{...h,amount:h.amount*remainingRatio}]));
+    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+requested,insurance:Math.max(0,current.portfolio.insurance-requested)},eventHistory:[...current.eventHistory,`保單提取：從 ${holding.label.split('｜')[0]} 提取 NT${roundMoney(requested).toLocaleString('en-US')}，已回到現金；後續保單價值基礎同步降低。`],lifeStatus:'已從分紅保單提取現金，後續非保證利益與退保價值將受影響。'}));
+    setInsuranceWithdrawals((x)=>({...x,[holdingId]:''}));
+  };
+
+  const setInsuranceWithdrawalPlan=(holdingId:string)=>{
+    const mode=insuranceWithdrawalModes[holdingId]||'fixed';
+    const startYear=Math.max(1,Number(insuranceWithdrawalStartYears[holdingId]||6));
+    const amount=Number(insuranceWithdrawals[holdingId]||0);
+    const percent=Number(insuranceWithdrawalPercents[holdingId]||0);
+    if(mode==='fixed'&&amount<=0)return alert('請輸入每年固定提取金額');
+    if(mode==='percent'&&(percent<=0||percent>100))return alert('請輸入 0～100% 的提取比例');
+    setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:mode,withdrawalAmount:mode==='fixed'?amount:undefined,withdrawalPercent:mode==='percent'?percent:undefined,withdrawalStartYear:startYear,cumulativeWithdrawals:h.cumulativeWithdrawals||0}));
+    const planText=mode==='fixed'
+      ? '每年固定提取 NT$'+roundMoney(amount).toLocaleString('en-US')
+      : '每年提取原始總預定保費的 '+percent+'%';
+    setGame(cur=>({...cur,eventHistory:[...cur.eventHistory,'保單提取計畫：設定第 '+startYear+' 保單年度起，'+planText+'。'],lifeStatus:'已設定分紅保單年度提取計畫。'}));
+  };
+  const cancelInsuranceWithdrawalPlan=(holdingId:string)=>{
+    setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:'none',withdrawalAmount:undefined,withdrawalPercent:undefined,withdrawalStartYear:undefined}));
+  };
+
+  const sellStock = (holdingId: string) => {
+    const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'stocks');
+    if (!holding) return;
+    const ownedShares = holding.shares || 0;
+    const sharesToSell = Number(stockTradeShares['sell-'+holdingId] || 0);
+    if (!Number.isInteger(sharesToSell) || sharesToSell <= 0) return alert('請輸入要賣出的整數股數');
+    if (sharesToSell > ownedShares) return alert('賣出股數不能超過目前持股');
+    const price = stockPrices[holding.productId] || 100;
+    const proceeds = sharesToSell * price;
+    const costBasisSold = (holding.buyPrice || 0) * sharesToSell;
+    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : sharesToSell === ownedShares ? [] : [{ ...item, shares: ownedShares - sharesToSell, amount: item.amount - costBasisSold }]));
+    setGame((current) => {
+      const portfolio = { ...current.portfolio, cash: current.portfolio.cash + proceeds, stocks: Math.max(0, current.portfolio.stocks - proceeds) };
+      return { ...current, portfolio, lifeStatus: `已賣出 ${holding.label.split('｜')[0]}，NT${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`, eventHistory: [...current.eventHistory, `股票賣出：${holding.label.split('｜')[0]}，實現損益 NT${roundMoney(proceeds - holding.amount).toLocaleString('en-US')}。`] };
+    });
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
+    setStockTradeShares((current) => ({ ...current, ['sell-'+holdingId]: '' }));
+  };
+
+  const sellStockPosition = (productId:string) => {
+    const lots=productHoldings.filter((h)=>h.asset==='stocks' && h.productId===productId);
+    const owned=lots.reduce((n,h)=>n+(h.shares||0),0);
+    const sharesToSell=Number(stockTradeShares['sell-position-'+productId]||0);
+    if(!Number.isInteger(sharesToSell)||sharesToSell<=0) return alert('請輸入要賣出的整數股數');
+    if(sharesToSell>owned) return alert('賣出股數不能超過目前持股');
+    const price=stockPrices[productId]||100, totalCost=lots.reduce((n,h)=>n+h.amount,0), avgCost=owned>0?totalCost/owned:0, proceeds=sharesToSell*price;
+    let remaining=sharesToSell;
+    setProductHoldings((current)=>current.flatMap((item)=>{if(item.asset!=='stocks'||item.productId!==productId||remaining<=0)return[item];const q=item.shares||0,take=Math.min(q,remaining);remaining-=take;if(take===q)return[];return[{...item,shares:q-take,amount:item.amount-avgCost*take,buyPrice:avgCost}]}));
+    const label=lots[0]?.label.split('｜')[0]||productId;
+    setGame((current)=>({...current,portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,stocks:Math.max(0,current.portfolio.stocks-proceeds)},lifeStatus:`已賣出 ${label} ${sharesToSell} 股，NT$${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`,eventHistory:[...current.eventHistory,`股票賣出：${label}，實現損益 NT$${roundMoney(proceeds-avgCost*sharesToSell).toLocaleString('en-US')}。`]}));
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId,label,side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
+    setStockTradeShares((current)=>({...current,['sell-position-'+productId]:''}));
+  };
+
+  const sellBond = (holdingId: string) => {
+    const holding = productHoldings.find((item) => item.id === holdingId && item.asset === 'bonds');
+    if (!holding) return;
+    const owned = holding.bondUnits || 0;
+    const units = Number(bondTradeUnits['sell-'+holdingId] || 0);
+    if (!Number.isInteger(units) || units <= 0) return alert('請輸入要賣出的整數張數');
+    if (units > owned) return alert('賣出張數不能超過目前持有');
+    const quote = bondPrices[holding.productId] || 100;
+    const face = holding.faceValue || 10000;
+    const proceeds = units * face * quote / 100;
+    const costPerUnit = holding.amount / Math.max(owned, 1);
+    const costSold = costPerUnit * units;
+    setProductHoldings((current) => current.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount: item.amount-costSold}]));
+    setGame((current) => ({...current, portfolio:{...current.portfolio,cash:current.portfolio.cash+proceeds,bonds:Math.max(0,current.portfolio.bonds-proceeds)}, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
+    setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'bonds',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:units,price:quote,amount:proceeds}]);
+    setBondTradeUnits((current)=>({...current,['sell-'+holdingId]:''}));
+  };
+
+  const bondHoldings = productHoldings.filter((holding) => holding.asset === 'bonds');
+  const stockHoldings = productHoldings.filter((holding) => holding.asset === 'stocks');
+  const stockPositions = productCatalog.stocks.map((product)=>{
+    const lots=stockHoldings.filter((h)=>h.productId===product.id);
+    const shares=lots.reduce((n,h)=>n+(h.shares||0),0);
+    const cost=lots.reduce((n,h)=>n+h.amount,0);
+    return {product,lots,shares,cost,avgCost:shares>0?cost/shares:0};
+  }).filter((x)=>x.shares>0);
+  const policyDue = productHoldings.filter((h) => h.asset === 'insurance' && h.premiumTerm && (h.premiumsPaid || 1) < h.premiumTerm).reduce((sum,h)=>sum+h.amount,0);
 
   const allocationTotal = ASSET_KEYS.reduce((sum, key) => sum + game.allocations[key], 0);
   const allocationAmountTotal = totalAssets * (allocationTotal / 100);
@@ -304,14 +692,30 @@ export default function Page() {
   const handleRestart = () => {
     const fresh = buildInitialState();
     setGame(fresh);
+    setProductHoldings([]);
+    setProductHistory([]);
+    const restartedMarket = buildPreGameMarket();
+    setStockPrices(restartedMarket.stockPrices);
+    setStockPriceHistory(restartedMarket.stockPriceHistory);
+    setBondPrices(restartedMarket.bondPrices);
+    setMarketSignals(restartedMarket.signals);
+    setAnnualReports([restartedMarket.preGameReport]);
+    setReportOpen(null);
+    setMarketYear(null);
+    setMarketSnapshots([{year:0,age:24,signals:restartedMarket.signals,stockPrices:restartedMarket.stockPrices,stockPaths:restartedMarket.stockPriceHistory,bondPrices:restartedMarket.bondPrices}]);
+    setMarketTrades([]);
+    setStockTradeShares({});
+    setBondTradeUnits({});
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+      window.localStorage.removeItem(HOLDINGS_KEY);
     }
   };
 
   const handleSave = () => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(game));
+      window.localStorage.setItem(HOLDINGS_KEY, JSON.stringify({ holdings: productHoldings, history: productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, marketModelVersion: MARKET_MODEL_VERSION }));
       alert('遊戲已儲存');
     }
   };
@@ -329,101 +733,219 @@ export default function Page() {
   const advanceYear = () => {
     if (game.pendingChoice || game.completed) return;
 
+    const signals = buildMarketSignals();
+    setMarketSignals(signals);
+    // Scheduled policy withdrawals are processed once per policy year before the next valuation.
+    let scheduledInsuranceCash=0;
+    const scheduledWithdrawalEvents:string[]=[];
+    const holdingsAfterScheduledWithdrawals=productHoldings.map(h=>{
+      if(h.asset!=='insurance'||!h.premiumTerm||!h.withdrawalMode||h.withdrawalMode==='none'||!h.withdrawalStartYear)return h;
+      const nextPolicyYear=Math.max(1,game.age+1-h.boughtAge+1);
+      if(nextPolicyYear<h.withdrawalStartYear)return h;
+      const currentValue=insuranceSurrenderValue(h.amount,h.premiumTerm,nextPolicyYear,signals);
+      const originalScheduledPremium=h.amount*h.premiumTerm;
+      const requested=h.withdrawalMode==='fixed'?(h.withdrawalAmount||0):originalScheduledPremium*((h.withdrawalPercent||0)/100);
+      const paid=Math.min(currentValue,Math.max(0,requested));
+      if(paid<=0)return h;
+      scheduledInsuranceCash+=paid;
+      scheduledWithdrawalEvents.push(`保單年度提取：${h.label.split('｜')[0]} 第 ${nextPolicyYear} 年提取 NT${roundMoney(paid).toLocaleString('en-US')}。`);
+      const remainingRatio=Math.max(0,(currentValue-paid)/Math.max(1,currentValue));
+      return {...h,amount:h.amount*remainingRatio,cumulativeWithdrawals:(h.cumulativeWithdrawals||0)+paid};
+    });
+    if(scheduledInsuranceCash>0)setProductHoldings(holdingsAfterScheduledWithdrawals);
+    setAnnualReports((current)=>[...current, buildAnnualReport(game.year, game.age, signals)]);
+    const nextStockPrices: Record<string, number> = { ...stockPrices };
+    const newMonthlyPaths: Record<string, number[]> = {};
+    Object.keys(nextStockPrices).forEach((id) => {
+      const profile = id === 'stock-tech' ? { drift: 0.10, vol: 0.24 } : id === 'stock-dividend' ? { drift: 0.055, vol: 0.12 } : { drift: 0.07, vol: 0.16 };
+      let price = nextStockPrices[id];
+      const path:number[] = [];
+      for (let month=0; month<12; month++) {
+        const shock = (Math.random()+Math.random()+Math.random()+Math.random()-2) * (profile.vol / Math.sqrt(12));
+        price = Math.max(5, price * (1 + profile.drift/12 + shock));
+        path.push(price);
+      }
+      nextStockPrices[id] = price;
+      newMonthlyPaths[id] = path;
+    });
+    setStockPrices(nextStockPrices);
+    setStockPriceHistory((current) => {
+      const next = { ...current };
+      Object.keys(nextStockPrices).forEach((id) => { next[id] = [...(next[id] || [stockPrices[id]]), ...newMonthlyPaths[id]]; });
+      return next;
+    });
+
+    // Bond quotes are per 100 face value. Rates up => prices down; longer duration moves more.
+    const rateShock = (signals.policyRate - selectedSignals.policyRate) + (signals.inflation-selectedSignals.inflation)*0.35;
+    const nextBondPrices:Record<string,number> = {...bondPrices};
+    Object.keys(nextBondPrices).forEach((id)=>{
+      const duration = id === 'bond-10' ? 7.2 : id === 'bond-corp' ? 5.2 : 4.2;
+      const creditShock = id === 'bond-corp' ? (Math.random()-0.5)*0.035 : 0;
+      nextBondPrices[id] = clamp(nextBondPrices[id] * (1 - duration*rateShock + creditShock), 65, 125);
+    });
+    setBondPrices(nextBondPrices);
+    setMarketSnapshots((current)=>[...current,{year:game.year,age:game.age,signals,stockPrices:nextStockPrices,stockPaths:newMonthlyPaths,bondPrices:nextBondPrices}]);
+
+    // Distributing ETFs: payout varies with earnings / macro conditions, then NAV drops by the cash distribution per share.
+    const baseDividendRates:Record<string,number>={'stock-world':0.020,'stock-tech':0.008,'stock-dividend':0.040};
+    const dividendGrowthFactor=clamp(1+signals.earnings*0.55+signals.growth*1.2+signals.news*0.025,0.72,1.18);
+    const dividendPerShare:Record<string,number>={};
+    Object.keys(nextStockPrices).forEach((id)=>{
+      const referencePrice=stockPrices[id]||nextStockPrices[id]||100;
+      const payoutRate=baseDividendRates[id]||0;
+      const cashDistribution=Math.max(0,referencePrice*payoutRate*dividendGrowthFactor);
+      dividendPerShare[id]=cashDistribution;
+      nextStockPrices[id]=Math.max(1,nextStockPrices[id]-cashDistribution);
+      const path=newMonthlyPaths[id];
+      if(path?.length)path[path.length-1]=nextStockPrices[id];
+    });
+    // Re-save post-distribution prices so charts and holdings use ex-dividend NAV.
+    setStockPrices(nextStockPrices);
+    setStockPriceHistory((current)=>{
+      const next={...current};
+      Object.keys(nextStockPrices).forEach((id)=>{const existing=next[id]||[stockPrices[id]];next[id]=[...existing.slice(0,Math.max(1,existing.length-12)),...(newMonthlyPaths[id]||[])];});
+      return next;
+    });
+    const stockDividends=productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(dividendPerShare[h.productId]||0),0);
+    const stockMarketValue = productHoldings.filter((h)=>h.asset==='stocks').reduce((sum,h)=>sum+(h.shares||0)*(nextStockPrices[h.productId]||100),0);
+    const bondMarketValue = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0);
+    const bondCoupons = productHoldings.filter((h)=>h.asset==='bonds').reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(h.couponRate||0),0);
+    const maturingBonds = productHoldings.filter((h)=>h.asset==='bonds' && h.maturityYears && game.age+1 >= h.boughtAge+h.maturityYears);
+    const maturedFace = maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000),0);
+    if (maturingBonds.length) setProductHoldings((current)=>current.filter((h)=>!maturingBonds.some((m)=>m.id===h.id)));
+    setGame((current)=>({...current, portfolio:{...current.portfolio, stocks:stockMarketValue, bonds:Math.max(0,bondMarketValue-maturingBonds.reduce((sum,h)=>sum+(h.bondUnits||0)*(h.faceValue||10000)*(nextBondPrices[h.productId]||100)/100,0)), cash:current.portfolio.cash+bondCoupons+maturedFace+stockDividends}, eventHistory:[...current.eventHistory, ...(stockDividends>0?[`股票配息：NT${roundMoney(stockDividends).toLocaleString('en-US')} 已進入現金。`]:[]), ...(bondCoupons>0?[`債券票息：NT$${roundMoney(bondCoupons).toLocaleString('en-US')} 已進入現金。`]:[]), ...(maturedFace>0?[`債券到期：面額本金 NT$${roundMoney(maturedFace).toLocaleString('en-US')} 已償還至現金。`]:[])]}));
+
+    // Real estate: price, mortgage and rental results are simulated once per year.
+    let propertyCashFlow=0;
+    let propertyEquity=0;
+    const nextProperties=propertyHoldings.map((p)=>{
+      const appreciation=clamp(0.025+signals.growth*0.9-signals.policyRate*0.45+p.populationTrend*1.5+productNoise(0.035),-0.12,0.14);
+      const currentValue=Math.max(500000,p.currentValue*(1+appreciation));
+      const monthlyRate=p.mortgageRate/12;
+      const months=p.mortgageYears*12;
+      const payment=p.mortgageBalance>0 ? p.mortgageBalance*(monthlyRate*Math.pow(1+monthlyRate,months))/(Math.pow(1+monthlyRate,months)-1) : 0;
+      let balance=p.mortgageBalance, annualMortgage=0;
+      for(let m=0;m<12 && balance>0;m++){const interest=balance*monthlyRate;const principal=Math.min(balance,Math.max(0,payment-interest));balance-=principal;annualMortgage+=interest+principal;}
+      let rentedMonths=0, rentalIncome=0;
+      if(p.rentalMode==='rent'){
+        const priceRatio=p.monthlyRent/Math.max(1,p.marketRent);
+        const occupancy=clamp(p.demand-(priceRatio-1)*0.85+signals.growth*0.8+productNoise(0.12),0.05,1);
+        rentedMonths=Math.max(0,Math.min(12,Math.round(occupancy*12)));
+        rentalIncome=p.monthlyRent*rentedMonths;
+      }
+      propertyCashFlow += rentalIncome-annualMortgage;
+      propertyEquity += Math.max(0,currentValue-balance);
+      return {...p,currentValue,mortgageBalance:balance,lastRentedMonths:rentedMonths,lastRentalIncome:rentalIncome,mortgageRate:Math.max(0.018,signals.policyRate*0.55+0.012)};
+    });
+    if(nextProperties.length) setPropertyHoldings(nextProperties);
+    setPropertyListings(buildPropertyMarket(signals,game.year));
+
+    // Participating policies are recurring premium contracts.
+    // The first entered amount becomes the fixed annual premium for the full premium term.
+    const activePolicies = productHoldings.filter((holding) => holding.asset === 'insurance' && holding.premiumTerm && (holding.premiumsPaid || 1) < holding.premiumTerm);
+    if (activePolicies.length) {
+      const due = activePolicies.reduce((sum, holding) => sum + holding.amount, 0);
+      if (game.portfolio.cash < due) {
+        alert(`保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 即將到期，但目前現金不足。請先保留足夠現金；保費屬於既有契約的強制年度支出。`);
+        return;
+      }
+      setProductHoldings((current) => current.map((holding) => {
+        if (holding.asset !== 'insurance' || !holding.premiumTerm || (holding.premiumsPaid || 1) >= holding.premiumTerm) return holding;
+        return { ...holding, premiumsPaid: (holding.premiumsPaid || 1) + 1 };
+      }));
+      setGame((current) => ({
+        ...current,
+        portfolio: { ...current.portfolio, cash: current.portfolio.cash - due, insurance: current.portfolio.insurance + due },
+        eventHistory: [...current.eventHistory, `保單續期：本年度自動繳交保費 NT${roundMoney(due).toLocaleString('en-US')}。`],
+        lifeStatus: `既有保單續期保費 NT${roundMoney(due).toLocaleString('en-US')} 已自動從現金扣除。`,
+      }));
+    }
+
+    // Mature fixed deposits before the new year's market/life simulation.
+    // Principal + contractual interest returns to cash, and the holding disappears.
+    const maturingDeposits = productHoldings.filter((holding) => {
+      if (holding.asset !== 'deposit') return false;
+      const term = holding.productId === 'deposit-1' ? 1 : holding.productId === 'deposit-3' ? 3 : 0;
+      return term > 0 && game.age + 1 >= holding.boughtAge + term;
+    });
+    if (maturingDeposits.length) {
+      const proceeds = maturingDeposits.reduce((sum, holding) => {
+        const term = holding.productId === 'deposit-1' ? 1 : 3;
+        const rate = holding.productId === 'deposit-1' ? 0.02 : 0.024;
+        return sum + holding.amount * (1 + rate * term);
+      }, 0);
+      const principal = maturingDeposits.reduce((sum, holding) => sum + holding.amount, 0);
+      setProductHoldings((current) => current.filter((holding) => !maturingDeposits.some((matured) => matured.id === holding.id)));
+      setGame((current) => {
+        const portfolio = { ...current.portfolio, deposit: Math.max(0, current.portfolio.deposit - principal), cash: current.portfolio.cash + proceeds };
+        const total = sumPortfolio(portfolio);
+        const allocations = { ...current.allocations };
+        ASSET_KEYS.forEach((key) => { allocations[key] = total > 0 ? (portfolio[key] / total) * 100 : 0; });
+        return { ...current, portfolio, allocations, eventHistory: [...current.eventHistory, `定存到期：本金與利息 NT${roundMoney(proceeds).toLocaleString('en-US')} 已回到現金。`] };
+      });
+    }
+
     setGame((current) => {
       const totalBefore = sumPortfolio(current.portfolio);
-      const rebalanced = getAssetValueByAllocation(totalBefore, current.allocations);
+      const rebalanced = { ...current.portfolio };
 
-      const inflationRate = clamp(0.018 + Math.random() * 0.06, 0.01, 0.08);
-      const marketEvent = randomFrom(MARKET_EVENTS);
-      const lifeEvent = randomFrom(LIFE_EVENTS);
-      const annualIncome = getAnnualIncome(current.age + 1);
-      const annualExpense = getAnnualExpense(current.age + 1);
+      // One market world: the same MarketSignals drive the annual report and asset behaviour.
+      const inflationRate = signals.inflation;
+      const reReturn = clamp(
+        0.035 + signals.growth*1.25 - signals.policyRate*0.65 - signals.creditSpread*0.35 + productNoise(0.045),
+        -0.16, 0.18
+      );
+      // Insurance is valued as a policy surrender value, not as principal compounded by an annual return.
+      const insuranceMarketValue = productHoldings.filter((h)=>h.asset==='insurance'&&h.premiumTerm).reduce((sum,h)=>sum+insuranceSurrenderValue(h.amount,h.premiumTerm!,Math.max(1,current.age+1-h.boughtAge+1),signals),0);
+      const cashReturn = Math.max(0, signals.policyRate*0.45);
+      const depositReturn = Math.max(0.005, signals.policyRate*0.72);
 
-      const baseReturns: Record<AssetKey, number> = {
-        cash: 0.014 + inflationRate * 0.2,
-        deposit: 0.025 + (Math.random() * 0.04),
-        bonds: 0.03 + (Math.random() * 0.04),
-        stocks: 0.08 + (Math.random() * 0.12),
-        realEstate: 0.045 + (Math.random() * 0.09),
-        insurance: 0.038 + (Math.random() * 0.05),
+      let nextPortfolio: Portfolio = {
+        ...rebalanced,
+        cash: rebalanced.cash * (1 + cashReturn),
+        deposit: rebalanced.deposit * (1 + depositReturn),
+        // Stocks and bonds are valued from their discrete holdings/market engines above.
+        stocks: stockMarketValue,
+        bonds: Math.max(0, bondMarketValue - maturedFace),
+        realEstate: nextProperties.length ? propertyEquity : rebalanced.realEstate * (1 + reReturn),
+        insurance: insuranceMarketValue,
       };
+      // Annual Capital: simplified outside investable cash flow.
+      // Living costs and salary management stay outside the game; the player simply receives
+      // NT$300,000 of fresh investable capital each year.
+      const annualCapital = 300000;
+      nextPortfolio.cash += stockDividends + bondCoupons + maturedFace + propertyCashFlow + annualCapital + scheduledInsuranceCash;
 
-      let assetsAfterMarket: Portfolio = { ...rebalanced };
-      ASSET_KEYS.forEach((key) => {
-        const modifier = marketEvent.effect[key] ?? 0;
-        assetsAfterMarket[key] = rebalanced[key] * (1 + baseReturns[key] + modifier);
-      });
-
-      let nextPortfolio = { ...assetsAfterMarket };
-      let nextIncome = annualIncome;
-      let nextExpense = annualExpense;
-      let nextLifeStatus = `${current.lifeStatus}`;
-      let nextEventHistory = [...current.eventHistory, `${marketEvent.title}: ${marketEvent.blurb}`];
-      let nextAnalysis = current.analysis;
-
-      // Salary and ordinary living costs matter every year, not only event years.
-      nextPortfolio.cash += Math.max(nextIncome - nextExpense, 0);
-      if (nextExpense > nextIncome) {
-        nextPortfolio = applyForcedSale(nextPortfolio, nextExpense - nextIncome, 'cash');
-      }
-
-      const eventCost = lifeEvent.expense ?? 0;
-
-      if (lifeEvent.expense && !lifeEvent.requiredChoice) {
-        const canCover = getLiquidity(nextPortfolio) >= eventCost;
-        if (canCover) {
-          const fromCash = Math.min(nextPortfolio.cash, eventCost);
-          nextPortfolio.cash -= fromCash;
-          const shortfall = eventCost - fromCash;
-          if (shortfall > 0) {
-            nextPortfolio = applyForcedSale(nextPortfolio, shortfall, 'cash');
-          }
-          nextLifeStatus = `${lifeEvent.title}：支出 NT${roundMoney(eventCost).toLocaleString('en-US')}。`;
-          nextAnalysis = `${lifeEvent.title}讓你更直覺理解現金流與人生事件的優先順序。`;
-        } else {
-          nextPortfolio = applyForcedSale(nextPortfolio, eventCost, 'cash');
-          nextLifeStatus = `${lifeEvent.title}：你的生活計畫被迫壓縮，流動性問題被立即放大。`;
-          nextAnalysis = '你在沒有足夠現金時被迫變賣資產，這正是 Liquidity Risk 的直接體驗。';
-          nextEventHistory.push('流動性危機：你不得不變賣資產以支付人生開支。');
-        }
-      }
-
-      if (lifeEvent.expense && lifeEvent.requiredChoice) {
-        const pendingChoice: PendingChoice = {
-          title: lifeEvent.title,
-          description: lifeEvent.description,
-          amount: eventCost,
-          choices: lifeEvent.choices || [],
-        };
-
-        return {
-          ...current,
-          age: current.age + 1,
-          year: current.year + 1,
-          income: nextIncome,
-          expense: nextExpense,
-          lifeStatus: `${lifeEvent.title}：需要你做出資產處置選擇。`,
-          inflationRate,
-          cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
-          marketEvent,
-          lastLifeEvent: lifeEvent,
-          pendingChoice,
-          portfolio: nextPortfolio,
-          eventHistory: nextEventHistory,
-          analysis: nextAnalysis,
-          timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
-        };
-      }
+      const report = buildAnnualReport(current.year, current.age, signals);
+      const nextLifeStatus = report.summary;
+      const nextEventHistory = [...current.eventHistory, ...scheduledWithdrawalEvents, `年度新增資金：NT$300,000 已進入現金。`, `第 ${current.year} 年金融年報：${report.summary}`];
+      const nextAnalysis = '本年度資產表現與金融年報共用同一組市場訊號，不再由單一隨機事件額外修改資產價格。';
 
       const finalTotal = sumPortfolio(nextPortfolio);
       const nextAge = current.age + 1;
+      const cashDelta = nextPortfolio.cash - current.portfolio.cash;
+      const rentIncome = nextProperties.reduce((sum, property) => sum + property.lastRentalIncome, 0);
+      const annualChanges = [
+        `現金｜期末 NT${roundMoney(nextPortfolio.cash).toLocaleString('en-US')}｜較年初 ${cashDelta >= 0 ? '+' : '-'}NT${roundMoney(Math.abs(cashDelta)).toLocaleString('en-US')}`,
+        `定存｜期末 NT${roundMoney(nextPortfolio.deposit).toLocaleString('en-US')}｜持有 ${productHoldings.filter((holding) => holding.asset === 'deposit').length} 筆`,
+        `債券｜期末市值 NT${roundMoney(nextPortfolio.bonds).toLocaleString('en-US')}｜本年票息 NT${roundMoney(bondCoupons).toLocaleString('en-US')}`,
+        `股票｜期末市值 NT${roundMoney(nextPortfolio.stocks).toLocaleString('en-US')}｜本年現金股息 NT${roundMoney(stockDividends).toLocaleString('en-US')}`,
+        `房地產｜期末淨值 NT${roundMoney(nextPortfolio.realEstate).toLocaleString('en-US')}｜本年租金收入 NT${roundMoney(rentIncome).toLocaleString('en-US')}`,
+        `長期保險｜期末退保價值 NT${roundMoney(nextPortfolio.insurance).toLocaleString('en-US')}｜達成率 ${(insuranceFulfillment(signals) * 100).toFixed(1)}%`,
+      ];
       const nextHistory: HistoryEntry = {
         year: current.year,
         age: current.age,
         total: finalTotal,
         real: getRealWealth(finalTotal, (1 + current.cumulativeInflation) * (1 + inflationRate) - 1),
         liquidity: getLiquidity(nextPortfolio),
-        eventTitle: marketEvent.title,
+        eventTitle: `第 ${current.year} 年金融年報`,
+        portfolio: nextPortfolio,
+        returnRate: (() => { const startTotal = current.history.length ? current.history[current.history.length - 1].total : sumPortfolio(current.portfolio); return startTotal > 0 ? (finalTotal - annualCapital - startTotal) / startTotal : 0; })(),
+        // Only operations created during this advanceYear belong to this year's history.
+        // eventHistory is cumulative, so use its pre-year length as the boundary.
+        actions: nextEventHistory.slice(current.eventHistory.length).filter((x) => !x.includes('金融年報：')),
+        changes: annualChanges,
       };
 
       const newHistory = [...current.history, nextHistory];
@@ -437,18 +959,18 @@ export default function Page() {
         age: nextAge,
         year: current.year + 1,
         portfolio: nextPortfolio,
-        income: nextIncome,
-        expense: nextExpense,
+        income: 0,
+        expense: 0,
         lifeStatus: nextLifeStatus,
         inflationRate,
         cumulativeInflation: (1 + current.cumulativeInflation) * (1 + inflationRate) - 1,
         eventHistory: nextEventHistory,
         history: newHistory,
-        marketEvent,
-        lastLifeEvent: lifeEvent,
+        marketEvent: null,
+        lastLifeEvent: null,
         pendingChoice: null,
         timeMachineUnlocked: current.timeMachineUnlocked || (current.age >= 35 && current.allocations.insurance >= 10),
-        marketCrisisCount: marketEvent.type === 'crisis' ? current.marketCrisisCount + 1 : current.marketCrisisCount,
+        marketCrisisCount: (signals.growth < 0 && signals.riskAppetite < -0.55) ? current.marketCrisisCount + 1 : current.marketCrisisCount,
         maxDrawdown,
         completed: nextAge >= 65,
       };
@@ -609,12 +1131,24 @@ export default function Page() {
 
   const canAdvance = !game.pendingChoice && !game.completed && allocationValid;
 
+  const selectedMarketYear = marketYear ?? (marketSnapshots[marketSnapshots.length-1]?.year ?? 0);
+  const selectedMarket = marketSnapshots.find((x)=>x.year===selectedMarketYear) ?? marketSnapshots[marketSnapshots.length-1];
+  const selectedSignals = selectedMarket?.signals ?? marketSignals;
+  const selectedTrades = marketTrades.filter((t)=>t.year===selectedMarketYear);
+  const availableMarketYears = marketSnapshots.map((x)=>x.year).sort((a,b)=>a-b);
+  const effectiveChartEndYear = selectedMarketYear;
+  const chartStartSnapshot = marketSnapshots.find((x)=>x.year===Math.min(chartStartYear,effectiveChartEndYear)) ?? marketSnapshots[0];
+  const chartEndSnapshot = marketSnapshots.find((x)=>x.year===effectiveChartEndYear) ?? selectedMarket;
+  const chartRangeSnapshots = marketSnapshots.filter((x)=>x.year>=chartStartSnapshot.year && x.year<=effectiveChartEndYear).sort((a,b)=>a.year-b.year);
+  const chartYearLabel = (year:number) => year===0 ? '遊戲開始前一年' : `${marketSnapshots.find((x)=>x.year===year)?.age ?? 24+year}歲`;
+  const setChartLookback = (years:number) => setChartStartYear(Math.max(0,effectiveChartEndYear-years+1));
+
   return (
     <main className="page-shell">
       <div className="app-wrap">
         <header className="topbar">
           <div>
-            <div className="eyebrow">TIME</div>
+            <div className="eyebrow">TIME · V2 DEVELOPMENT</div>
             <h1>金融人生模擬器</h1>
           </div>
           <div className="header-actions">
@@ -624,6 +1158,8 @@ export default function Page() {
           </div>
         </header>
 
+        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>資產總表</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
+        {mainView === 'game' ? <>
         <section className="stats-row">
           <div className="stat-card">
             <span>目前年齡</span>
@@ -646,26 +1182,40 @@ export default function Page() {
             <strong>{(game.cumulativeInflation * 100).toFixed(1)}%</strong>
           </div>
           <div className="stat-card">
-            <span>今年收入</span>
-            <strong>NT${roundMoney(game.income).toLocaleString('en-US')}</strong>
-          </div>
-          <div className="stat-card">
-            <span>今年支出</span>
-            <strong>NT${roundMoney(game.expense).toLocaleString('en-US')}</strong>
-          </div>
-          <div className="stat-card status">
-            <span>人生狀態</span>
-            <strong>{game.lifeStatus}</strong>
+            <span>年度新增資金</span>
+            <strong>NT$300,000</strong>
           </div>
         </section>
 
         <section className="layout">
           <div className="panel allocations-panel">
+            <div className="holdings-status">
+              <div className="holdings-tabs">
+                <button className={holdingView === 'current' ? 'active' : ''} onClick={() => setHoldingView('current')}>當下持有</button>
+                <button className={holdingView === 'history' ? 'active' : ''} onClick={() => setHoldingView('history')}>歷史紀錄</button>
+              </div>
+              {holdingView === 'current' ? <>
+                <div className="panel-header"><h2>當下持有</h2><span>{productHoldings.length} 筆持倉</span></div>
+                {productHoldings.length === 0 ? <p className="empty-holdings">目前沒有持有中的金融商品。</p> :
+                  <div className="holdings-strip">{productHoldings.map((holding) => <div className="holding-chip" key={holding.id}>
+                    <strong>{holding.label.split('｜')[0]}</strong><span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
+                    <small>{holding.boughtAge} 歲購入 · {totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small>
+                  </div>)}</div>}
+              </> : <>
+                <div className="panel-header"><h2>歷史紀錄</h2><span>累計 {productHistory.length} 筆</span></div>
+                {productHistory.length === 0 ? <p className="empty-holdings">目前還沒有任何購買紀錄。</p> :
+                  <div className="holdings-strip">{[...productHistory].reverse().map((holding) => <div className="holding-chip history-chip" key={'history-'+holding.id}>
+                    <strong>{holding.label.split('｜')[0]}</strong><span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
+                    <small>{holding.boughtAge} 歲購入 · 永久保留購買紀錄</small>
+                  </div>)}</div>}
+              </>}
+            </div>
             <div className="panel-header">
-              <h2>資產配置</h2>
+              <h2>V2 開發分支：資產持有與交易</h2>
               <span className={allocationValid ? '' : 'allocation-warning'}>{allocationValid ? '配置完成 ✓' : `尚差 NT${roundMoney(Math.abs(allocationDifference)).toLocaleString('en-US')} ${allocationDifference > 0 ? '未配置' : '超額配置'}`}</span>
             </div>
             {allocationList.map(({ asset, percentage, amount }) => (
+              asset === 'cash' ?
               <div key={asset} className="allocation-row">
                 <div className="asset-title-wrap">
                   <div className="asset-name">{ASSET_META[asset].label}</div>
@@ -676,11 +1226,9 @@ export default function Page() {
                   <label className="money-input-wrap">
                     <span>NT$</span>
                     <input
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={roundMoney(amount)}
-                      onChange={(event) => updateAllocationAmount(asset, event.target.value)}
-                      aria-label={`${ASSET_META[asset].label}配置金額`}
+                      value={roundMoney(game.portfolio.cash).toLocaleString('en-US')}
+                      readOnly
+                      aria-label="目前現金餘額"
                     />
                   </label>
                   <div className="value-box compact-value">
@@ -689,82 +1237,178 @@ export default function Page() {
                   </div>
                 </div>
               </div>
+              : <details key={asset} className="product-drawer">
+                  <summary><strong>{ASSET_META[asset].label}</strong><span>展開查看商品與持有部位</span></summary>
+                  <div className="product-options">
+                    {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
+                      <div className="shop-label">目前持有倉位</div>
+                      {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
+                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceSurrenderValue(holding.amount,holding.premiumTerm,py,marketSignals),paid=holding.premiumsPaid||1,irr=policyIrr(holding.amount,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
+                          <div className="insurance-policy-head"><div><strong>{holding.label.split('｜')[0]}</strong><small>保單年度 第 {py} 年 · 供款 {paid}/{holding.premiumTerm} 年</small></div><b>退保價值 NT${roundMoney(sv).toLocaleString('en-US')}</b></div>
+                          <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(holding.amount*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
+                          <div className="insurance-withdraw"><label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="單次提取金額" value={insuranceWithdrawals[holding.id]||''} onChange={(e)=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><button onClick={()=>withdrawInsurance(holding.id)}>單次提取</button></div>
+                          <div className="insurance-plan"><strong>年度提取計畫</strong><label><span>提取方式</span><select value={insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed'} onChange={e=>setInsuranceWithdrawalModes(x=>({...x,[holding.id]:e.target.value as 'fixed'|'percent'}))}><option value="fixed">每年固定金額</option><option value="percent">每年按總預定保費比例</option></select></label><label><span>開始保單年度</span><input inputMode="numeric" value={insuranceWithdrawalStartYears[holding.id]||holding.withdrawalStartYear||6} onChange={e=>setInsuranceWithdrawalStartYears(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>{(insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed')==='fixed'?<label><span>每年提取 NT$</span><input inputMode="numeric" value={insuranceWithdrawals[holding.id]||holding.withdrawalAmount||''} onChange={e=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>:<label><span>總預定保費比例 %</span><input inputMode="decimal" value={insuranceWithdrawalPercents[holding.id]||holding.withdrawalPercent||''} onChange={e=>setInsuranceWithdrawalPercents(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9.]/g,'')}))}/></label>}<div><button onClick={()=>setInsuranceWithdrawalPlan(holding.id)}>設定年度提取</button>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<button onClick={()=>cancelInsuranceWithdrawalPlan(holding.id)}>取消計畫</button>}</div>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<small>已啟用：第 {holding.withdrawalStartYear} 年起 · 累計已提取 NT${roundMoney(holding.cumulativeWithdrawals||0).toLocaleString('en-US')}</small>}</div>
+                          <small>達成率依市場訊號平滑模擬於 90%～105%，只作用於非保證利益；此區間為 TIME 模型設定。</small>
+                        </div>})() : <><div><strong>{holding.label.split('｜')[0]}</strong><small>{holding.boughtAge} 歲購入 · 本金鎖定</small></div><div><b>NT${roundMoney(holding.amount).toLocaleString('en-US')}</b><small>{totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small></div></>}
+                      </div>)}
+                    </div>}
+                    <div className="shop-label">可購買商品</div>
+                    {asset === 'realEstate' && <div className="property-shop">
+                    <div className="shop-label">本年度市場釋出物件</div>
+                    {propertyListings.length===0?<p>本年度暫無合適物件釋出。</p>:propertyListings.map(p=><div className="shop-product-card" key={p.id}>
+                    <strong>{p.name}｜{p.district}</strong>
+                    <small>{p.ping.toFixed(1)} 坪 · 每坪 NT${roundMoney(p.price/p.ping).toLocaleString('en-US')} · 總價 NT${p.price.toLocaleString('en-US')}</small>
+                    <small>頭期 20%：NT${roundMoney(p.price*p.downPaymentRate).toLocaleString('en-US')} · 房貸 {(p.mortgageRate*100).toFixed(2)}% · 30年</small>
+                    <small>人口 {p.populationTrend>=0?'↑':'↓'} {(Math.abs(p.populationTrend)*100).toFixed(1)}% · 出生率 {(p.birthRate*100).toFixed(2)}% · 買氣 {p.demand>.8?'強':p.demand>.68?'中等':'偏弱'} · 市場月租約 NT${p.marketRent.toLocaleString('en-US')}</small>
+                    <button onClick={()=>buyProperty(p)}>支付頭期並買入</button>
+                    </div>)}
+                    </div>} {productCatalog[asset].map((product) => (
+                      <div className="shop-product-card" key={product.id}>
+                        <strong>{product.label}</strong>
+                        <div className="shop-buy-row">
+                          {asset === 'stocks' ? <div className="stock-order-box">
+                            <div className="stock-live-price">目前每股 <b>NT${(stockPrices[product.id] || 100).toFixed(2)}</b></div>
+                            <label className="money-input-wrap"><span>股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入股數" value={stockTradeShares[product.id] || ''} onChange={(event) => setStockTradeShares((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>
+                            <small>預估成交金額：NT${roundMoney(Number(stockTradeShares[product.id] || 0) * (stockPrices[product.id] || 100)).toLocaleString('en-US')}</small>
+                          </div> : asset === 'bonds' ? <div className="stock-order-box"><div className="stock-live-price">目前價格 <b>{(selectedMarket?.bondPrices[product.id]||bondPrices[product.id]||100).toFixed(2)}</b> / 面額100</div><label className="money-input-wrap"><span>張數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入買入張數" value={bondTradeUnits[product.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,[product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>每張面額 NT$10,000 · 預估成交 NT${roundMoney(Number(bondTradeUnits[product.id]||0)*10000*(bondPrices[product.id]||100)/100).toLocaleString('en-US')}</small></div> : <label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入投入金額" value={productAmounts[product.id] || ''} onChange={(event) => setProductAmounts((current) => ({ ...current, [product.id]: event.target.value.replace(/[^0-9]/g, '') }))} /></label>}
+                          <button onClick={() => buyProduct(asset, product.id)}>購買</button>
+                        </div>
+                      </div>
+                    ))}
+                    <p>購買時才輸入投入金額；確認購買後形成持倉，不能再直接修改本金。</p>
+                  </div>
+                </details>
             ))}
 
             <div className="cta-row">
-              <button className="primary" disabled={!canAdvance} onClick={advanceYear}>
-                度過這一年 →
+              <button className="primary advance-year-button" disabled={!canAdvance} onClick={advanceYear}>
+                讓時間前進一年 →
               </button>
             </div>
           </div>
 
           <div className="side-stack">
             <div className="panel event-card">
-              <div className="panel-header compact">
-                <h2>年度事件</h2>
-              </div>
-              {game.marketEvent ? (
+              <div className="panel-header compact"><h2>金融年報</h2><span>{annualReports.length} 份</span></div>
+              {annualReports.length===0 ? <p>第一個年度結束後，這裡會整理當年的經濟、利率、企業獲利、資金與市場消息。</p> :
                 <>
-                  <div className="event-year">YEAR {game.year}</div>
-                  <h3>{game.marketEvent.title}</h3>
-                  <p>{game.marketEvent.blurb}</p>
-                  <div className="mini-badges">
-                    {ASSET_KEYS.map((asset) => {
-                      const effect = game.marketEvent?.effect[asset];
-                      if (!effect) return null;
-                      return (
-                        <span key={asset} className="badge">
-                          {ASSET_META[asset].label} {effect > 0 ? '+' : ''}{(effect * 100).toFixed(0)}%
-                        </span>
-                      );
-                    })}
+                  <p>{annualReports[annualReports.length-1].summary}</p>
+                  <div className="annual-report-picker">
+                    <label htmlFor="annual-report-year">查看金融年報</label>
+                    <select
+                      id="annual-report-year"
+                      value={reportOpen ?? annualReports[annualReports.length-1].year}
+                      onChange={(e)=>setReportOpen(Number(e.target.value))}
+                    >
+                      {[...annualReports].reverse().map((report)=>
+                        <option key={report.year} value={report.year}>
+                          {report.year===0?'遊戲開始前一年｜市場背景':`第 ${report.year} 年｜${report.age}歲`}
+                        </option>
+                      )}
+                    </select>
                   </div>
-                </>
-              ) : (
-                <p>每年都會出現新的市場環境與人生難題。</p>
-              )}
+                  {(()=>{
+                    const selectedYear = reportOpen ?? annualReports[annualReports.length-1].year;
+                    const report = annualReports.find((item)=>item.year===selectedYear) ?? annualReports[annualReports.length-1];
+                    return <div className="annual-report-detail annual-report-selected">
+                      <div className="annual-report-selected-title">
+                        <strong>{report.year===0?'遊戲開始前一年｜金融年報':`第 ${report.year} 年金融年報`}</strong>
+                        <span>{report.year===0?'市場背景':`${report.age}歲`}</span>
+                      </div>
+                      {report.events.map((event)=><p key={event.label}><b>{event.label}</b><span>{event.text}</span></p>)}
+                      <div className="annual-report-summary"><b>年度摘要</b><span>{report.summary}</span></div>
+                    </div>;
+                  })()}
+                </>}
             </div>
 
             <div className="panel timeline-panel">
               <div className="panel-header compact">
                 <h2>歷史紀錄</h2>
               </div>
-              <ul className="history-list">
-                {game.history.length === 0 ? (
-                  <li>還沒有歷史紀錄，第一年即將開始。</li>
-                ) : (
-                  [...game.history].slice(-5).reverse().map((item, idx) => (
-                    <li key={`${item.year}-${idx}`}>
-                      <strong>{item.age}歲</strong>
-                      <span>{item.eventTitle}</span>
-                      <em>NT${roundMoney(item.total).toLocaleString('en-US')}</em>
-                    </li>
-                  ))
-                )}
-              </ul>
+              {game.history.length === 0 ? <p>還沒有歷史紀錄，第一年即將開始。</p> : (() => {
+                const selectedYear = reportOpen ?? game.history[game.history.length - 1].year;
+                const item = game.history.find((x) => x.year === selectedYear) ?? game.history[game.history.length - 1];
+                const p = item.portfolio;
+                return <>
+                  <div className="history-year-picker"><select aria-label="歷史紀錄年度" value={item.year} onChange={(e)=>setReportOpen(Number(e.target.value))}>{[...game.history].reverse().map((x)=><option key={x.year} value={x.year}>{'第 '+x.year+' 年｜'+x.age+'歲'}</option>)}</select></div>
+                  <button className="history-popup-trigger" onClick={()=>setResearchOverlay({key:'history-'+item.year,title:'第 '+item.year+' 年｜'+item.age+'歲',body:<div className="history-popup-body">
+                    <div className="history-popup-total"><span>年度總資產</span><strong>NT${roundMoney(item.total).toLocaleString('en-US')}</strong></div>
+                    <div className="history-return"><span>年度投資報酬率</span><strong>{item.returnRate == null ? '舊紀錄未保存' : (item.returnRate >= 0 ? '+' : '')+(item.returnRate*100).toFixed(1)+'%'}</strong></div>
+                    <div className="history-assets">{p ? Object.entries({現金:p.cash,定存:p.deposit,債券:p.bonds,股票:p.stocks,房地產:p.realEstate,長期保險:p.insurance}).map(([label,value])=><div key={label}><span>{label}</span><strong>NT${roundMoney(value).toLocaleString('en-US')}</strong></div>) : <p>這筆舊紀錄沒有保存各資產餘額；新年度開始後會自動記錄。</p>}</div>
+                    <div className="history-actions"><b>本年度資產變化</b>{item.changes?.length ? item.changes.map((x,i)=><p key={i}>{x}</p>) : <p>這筆舊紀錄沒有保存資產變化。</p>}</div>
+                    <div className="history-actions"><b>當年度操作</b>{item.actions?.length ? item.actions.map((x,i)=><p key={i}>{x}</p>) : <p>這個年度沒有可顯示的操作紀錄。</p>}</div>
+                  </div>})}><span>第 {item.year} 年資產紀錄</span><b>查看詳情 →</b></button>
+                </>;
+              })()}
             </div>
           </div>
         </section>
 
-        {game.pendingChoice && (
-          <div className="modal-overlay">
-            <div className="modal-card">
-              <div className="eyebrow">重大人生事件</div>
-              <h2>{game.pendingChoice.title}</h2>
-              <p>{game.pendingChoice.description}</p>
-              <div className="modal-amount">需要：NT${roundMoney(game.pendingChoice.amount).toLocaleString('en-US')}</div>
-              <div className="choice-list">
-                {game.pendingChoice.choices.map((choice) => (
-                  <button key={choice.label} onClick={() => resolveChoice(choice.action)}>
-                    <span>{choice.label}</span>
-                    <small>{choice.note}</small>
-                  </button>
-                ))}
+        </> : <section className="panel stock-market-page">
+          <div className="panel-header"><div><div className="eyebrow">MARKET TERMINAL</div><h2>投資市場價格與持倉明細</h2></div><span>{selectedMarketYear===0?'PRE-GAME':`YEAR ${selectedMarketYear}`}</span></div>
+          <div className="market-year-picker"><label htmlFor="market-year">檢視年度</label><select id="market-year" value={selectedMarketYear} onChange={(e)=>{const y=Number(e.target.value);setMarketYear(y);setChartStartYear((s)=>Math.min(s,y));setResearchOverlay(null)}}>{[...marketSnapshots].reverse().map((x)=><option key={x.year} value={x.year}>{x.year===0?'遊戲開始前一年｜市場背景':`第 ${x.year} 年｜${x.age}歲`}</option>)}</select></div>
+          <div className="chart-range-panel"><div className="chart-range-title"><strong>走勢圖期間</strong><span>終點跟隨檢視年度</span></div><div className="chart-range-controls chart-range-controls-single"><select aria-label="圖表起始年份" value={chartStartSnapshot.year} onChange={(e)=>setChartStartYear(Number(e.target.value))}>{availableMarketYears.filter(y=>y<=effectiveChartEndYear).map(y=><option key={y} value={y}>{chartYearLabel(y)}</option>)}</select><span>→</span><div className="chart-range-end">{chartYearLabel(effectiveChartEndYear)}</div></div><div className="chart-range-shortcuts">{[1,3,5,10].map(n=><button key={n} onClick={()=>setChartLookback(n)}>{n}年</button>)}<button onClick={()=>setChartStartYear(0)}>全部</button></div><p className="chart-range-note">圖表不會顯示檢視年度之後的未來資料。</p></div>
+          {productCatalog.stocks.map((product) => {
+            const price=selectedMarket?.stockPrices[product.id]||stockPrices[product.id]||100;
+            const selectedHist=selectedMarket?.stockPaths[product.id]||stockPriceHistory[product.id]||[100];
+            const hist=chartRangeSnapshots.flatMap((snap)=>snap.stockPaths[product.id]||[]);
+            const chartHist=hist.length?hist:selectedHist;
+            const min=Math.min(...chartHist), max=Math.max(...chartHist), range=Math.max(1,max-min);
+            const points=chartHist.map((v,i)=>`${chartHist.length===1?0:(i/(chartHist.length-1))*100},${90-((v-min)/range)*80}`).join(' ');
+            const research=stockResearch(product.id,selectedSignals,selectedHist);
+            return <div className="market-card" key={product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>虛擬市場價格</small></div><b>NT${price.toFixed(2)}</b></div>
+              <div className="interactive-chart" onPointerMove={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(chartHist.length-1))})}} onPointerLeave={()=>setChartHover(null)} onPointerDown={(e)=>{const rect=e.currentTarget.getBoundingClientRect();const ratio=clamp((e.clientX-rect.left)/rect.width,0,1);setChartHover({id:product.id,index:Math.round(ratio*(chartHist.length-1))})}}>
+                <div className="chart-y-axis"><span>NT${max.toFixed(0)}</span><span>NT${((max+min)/2).toFixed(0)}</span><span>NT${min.toFixed(0)}</span></div>
+                <svg className="price-chart" viewBox="0 0 100 100" preserveAspectRatio="none"><polyline points={points}/>{chartHover?.id===product.id&&<line className="chart-crosshair" x1={(chartHover.index/Math.max(1,chartHist.length-1))*100} x2={(chartHover.index/Math.max(1,chartHist.length-1))*100} y1="0" y2="100"/>}</svg>
+                {chartHover?.id===product.id&&(()=>{const i=clamp(chartHover.index,0,chartHist.length-1);const v=chartHist[i];const snapIndex=Math.min(chartRangeSnapshots.length-1,Math.floor(i/12));const monthIndex=(i%12)+1;const snap=chartRangeSnapshots[snapIndex];const label=snap?.year===0?`遊戲開始前 · 第 ${monthIndex} 月`:`${snap?.age ?? ''}歲 · 第 ${monthIndex} 月`;return <div className="chart-tooltip" style={{left:`${clamp((i/Math.max(1,chartHist.length-1))*100,12,82)}%`}}><strong>{label}</strong><span>NT${v.toFixed(2)}</span></div>})()}
+              </div>
+              <div className="market-years"><span>{chartYearLabel(chartStartSnapshot.year)}</span><span>{chartYearLabel(chartEndSnapshot.year)}</span></div>
+              <div className="research-tabs">
+                {[
+                  ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
+                  ['flow','籌碼面',signalLabel(research.flow,'流入','流出')],
+                  ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
+                  ['technical','技術面',signalLabel(research.technical,'偏強','偏弱')],
+                ].map(([key,label,status])=><button key={key} onClick={()=>{
+                  const bodies:Record<string,React.ReactNode>={
+                    fundamental:<><p>企業獲利成長 {(selectedSignals.earnings*100).toFixed(1)}% · 景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 政策利率 {(selectedSignals.policyRate*100).toFixed(1)}%</p><p>目前企業獲利偏弱，景氣接近持平，利率仍在相對高位。整體基本面偏中性至保守，短期缺乏明顯推升估值的力量。</p></>,
+                    flow:<><p>資金動能 {research.flow>=0?'+':''}{research.flow.toFixed(2)} · {signalLabel(selectedSignals.riskAppetite,'Risk-on','Risk-off')}</p><p>目前大型資金動能偏弱，市場風險偏好有限。買盤力道不足，短期資金面對價格的支撐較弱。</p></>,
+                    news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)} · 通膨 {(selectedSignals.inflation*100).toFixed(1)}%</p><p>近期政策、產業與企業消息整體偏正面，但部分利多可能已提前反映在價格中。消息環境有利，仍需觀察市場後續反應。</p></>,
+                    technical:<><p>近 6 月價格動能 {hist.length>2?(((price/hist[Math.max(0,hist.length-7)])-1)*100).toFixed(1):'0.0'}% · 技術訊號 {research.technical.toFixed(2)}</p><p>近期價格動能偏強，走勢維持向上。短期趨勢仍有支撐，但過去的上漲不代表下一期一定延續。</p></>
+                  }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
+                }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
               </div>
             </div>
-          </div>
-        )}
-
+          })}
+          <div className="market-year-trades"><div className="panel-header compact"><h2>當年度買賣紀錄</h2><span>{selectedTrades.length} 筆</span></div>{selectedTrades.length===0?<p>這個年度沒有股票或債券交易。</p>:<div className="market-trade-scroll">{selectedTrades.map((t,i)=><div className="market-trade-row" key={i}><strong>{t.side}｜{t.label}</strong><span>{t.quantity} {t.asset==='stocks'?'股':'張'} · {t.price.toFixed(2)}</span><em>NT{roundMoney(t.amount).toLocaleString('en-US')}</em></div>)}</div>}</div>
+          <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
+          {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,selectedSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
+              {[
+                ['fundamental','基本面',signalLabel(research.fundamental,'改善','承壓')],
+                ['flow','籌碼面',signalLabel(research.flow,'需求偏強','需求偏弱')],
+                ['news','消息面',signalLabel(research.news,'偏正面','偏負面')],
+                ['rate','利率面',signalLabel(research.rate,'有利','不利')],
+              ].map(([key,label,status])=><button key={key} onClick={()=>{
+                const bodies:Record<string,React.ReactNode>={
+                  fundamental:<><p>景氣成長 {(selectedSignals.growth*100).toFixed(1)}% · 信用利差 {(marketSignals.creditSpread*100).toFixed(1)}%</p><p>目前景氣與信用環境尚可，信用利差仍在可控範圍。政府債信用風險較低；公司債則需留意企業償債能力是否轉弱。</p></>,
+                  flow:<><p>{signalLabel(-selectedSignals.riskAppetite,'避險資金增加','避險資金減少')} · 需求訊號 {research.flow.toFixed(2)}</p><p>目前避險資金需求有限，債券買盤沒有明顯增強。若市場風險升高，高品質政府債可能獲得較多資金支持。</p></>,
+                  news:<><p>消息強度 {research.news>=0?'+':''}{research.news.toFixed(2)}</p><p>近期央行、通膨與信用消息整體影響有限。若出現升息、降評級或通膨升溫，債券價格可能面臨較大壓力。</p></>,
+                  rate:<><p>政策利率 {(selectedSignals.policyRate*100).toFixed(1)}% · 通膨 {(selectedSignals.inflation*100).toFixed(1)}%</p><p>目前利率水準對既有債券價格形成一定壓力。若利率繼續上升，長天期債券通常會比短天期債券承受更大的價格波動。</p></>
+                }; toggleResearch(product.id+'-'+key,label+'詳細資訊',bodies[key]);
+              }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
+            </div></div>})}
+          {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
+          <div className="panel-header"><h2>房地產市場與我的房產</h2><span>{propertyHoldings.length} 間持有</span></div>
+          {propertyListings.map(p=><div className="market-card" key={"market-"+p.id}><div className="market-quote"><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)} 坪</small></div><b>NT${(p.price/10000).toFixed(0)}萬</b></div><p>每坪 NT${roundMoney(p.price/p.ping).toLocaleString("en-US")} · 頭期 NT${roundMoney(p.price*p.downPaymentRate).toLocaleString("en-US")} · 房貸 {(p.mortgageRate*100).toFixed(2)}%</p><p>人口 {p.populationTrend>=0?"↑":"↓"} · 出生率 {(p.birthRate*100).toFixed(2)}% · 買氣 {p.demand>.8?"強":p.demand>.68?"中等":"偏弱"} · 市場租金約 NT${p.marketRent.toLocaleString("en-US")}/月</p></div>)}
+          {propertyHoldings.map(p=>{const equity=Math.max(0,p.currentValue-p.mortgageBalance);return <div className="stock-statement" key={"owned-"+p.id}><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)}坪 · {p.boughtAge}歲購入</small></div><div><span>目前估值</span><b>NT${roundMoney(p.currentValue).toLocaleString("en-US")}</b></div><div><span>剩餘房貸</span><b>NT${roundMoney(p.mortgageBalance).toLocaleString("en-US")}</b></div><div><span>房屋淨值</span><b>NT${roundMoney(equity).toLocaleString("en-US")}</b></div><div><span>上年度出租結果</span><b>{p.rentalMode==="rent"?p.lastRentedMonths+"/12 個月":"未出租"}</b><small>{p.lastRentalIncome>0?"租金 NT$"+roundMoney(p.lastRentalIncome).toLocaleString("en-US")+" 已回到現金":""}</small></div><div className="stock-sell-order"><label className="money-input-wrap"><span>月租</span><input inputMode="numeric" value={rentInputs[p.id]??String(roundMoney(p.monthlyRent))} onChange={e=>setRentInputs(x=>({...x,[p.id]:e.target.value.replace(/[^0-9]/g,"")}))}/></label><small>市場行情約 NT${p.marketRent.toLocaleString("en-US")}/月</small></div><button onClick={()=>setPropertyRental(p.id,"rent")}>設定出租</button><button onClick={()=>setPropertyRental(p.id,"vacant")}>暫不出租</button><button className="danger" onClick={()=>sellProperty(p.id)}>出售房產</button></div>})}
+          <div className="panel-header"><h2>我的持股明細</h2><span>{stockPositions.length} 檔</span></div>
+          {stockPositions.length===0?<p>目前沒有持股。</p>:stockPositions.map(pos=>{const price=stockPrices[pos.product.id]||100;const value=pos.shares*price;const pnl=value-pos.cost;return <div className="stock-statement" key={'position-'+pos.product.id}>
+            <div><strong>{pos.product.label.split('｜')[0]}</strong><small>{pos.lots.length} 筆買入紀錄 · 平均成本</small></div>
+            <div><span>平均成本</span><b>NT${pos.avgCost.toFixed(2)}</b></div><div><span>持股單位</span><b>{pos.shares.toFixed(2)}</b></div><div><span>目前市價</span><b>NT${price.toFixed(2)}</b></div><div><span>市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>未實現損益</span><b>{pnl>=0?'+':''}NT${roundMoney(pnl).toLocaleString('en-US')}</b></div>
+            <details className="stock-lot-details"><summary>查看買入明細</summary>{pos.lots.map(h=><div className="stock-lot-row" key={h.id}><span>{h.boughtAge}歲</span><span>{(h.shares||0).toFixed(0)} 股</span><span>NT${(h.buyPrice||0).toFixed(2)}</span></div>)}</details>
+            <div className="stock-sell-order"><label className="money-input-wrap"><span>賣出股數</span><input inputMode="numeric" pattern="[0-9]*" placeholder="輸入股數" value={stockTradeShares['sell-position-'+pos.product.id]||''} onChange={(e)=>setStockTradeShares(c=>({...c,['sell-position-'+pos.product.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><small>預估賣出金額 NT${roundMoney(Number(stockTradeShares['sell-position-'+pos.product.id]||0)*price).toLocaleString('en-US')}</small></div><button className="danger" onClick={()=>sellStockPosition(pos.product.id)}>賣出</button></div>})}
+        </section>}
         {game.timeMachineUnlocked && !game.completed && (
           <section className="panel" style={{ marginTop: 18 }}>
             <div className="eyebrow">TIME MACHINE UNLOCKED</div>
@@ -781,6 +1425,7 @@ export default function Page() {
           </section>
         )}
 
+        {researchOverlay && <div className="research-overlay-backdrop" onClick={()=>setResearchOverlay(null)}><div className="research-overlay-card" onClick={(e)=>e.stopPropagation()}><button className="research-close" onClick={()=>setResearchOverlay(null)}>×</button><strong>{researchOverlay.title}</strong>{researchOverlay.body}</div></div>}
         {game.completed && (
           <div className="modal-overlay">
             <div className="report-card">
