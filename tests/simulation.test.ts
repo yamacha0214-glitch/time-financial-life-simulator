@@ -112,6 +112,11 @@ test('invalid nested financial fields are rejected and raw save is retained',()=
   const raw=JSON.stringify(invalid),decoded=decodeWorld(raw);assert.equal(decoded.ok,false);if(decoded.ok)return;assert.equal(decoded.reason,'invalid');assert.equal(decoded.raw,raw);
 });
 
+test('invalid persisted asset operations are rejected instead of entering annual history',()=>{
+  const invalid=validWorld();invalid.market.assetOperations=[{id:'broken',year:1,label:'缺少 detail'}];
+  const decoded=decodeWorld(JSON.stringify(invalid));assert.equal(decoded.ok,false);if(decoded.ok)return;assert.match(decoded.diagnostics.join(' '),/資產操作紀錄/);
+});
+
 test('portfolio mismatch is diagnosed and reconciled from holdings without changing raw save',()=>{
   const world=validWorld();world.holdings=[{id:'s',productId:'stock-world',asset:'stocks',label:'stock',amount:1000,boughtAge:25,buyPrice:100,shares:10}];
   const raw=JSON.stringify(world),decoded=decodeWorld(raw);assert.equal(decoded.ok,true);if(!decoded.ok)return;assert.equal(decoded.value.game.portfolio.stocks,1000);assert.ok(decoded.diagnostics.length>0);assert.equal(JSON.parse(raw).game.portfolio.stocks,0);

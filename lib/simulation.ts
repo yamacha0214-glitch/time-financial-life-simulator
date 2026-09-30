@@ -27,7 +27,7 @@ export type AnnualTicket = {
   propertyNoise:Record<string,{appreciation:number; occupancy:number}>;
 };
 
-export type CashFlow = { kind:'external'|'dividend'|'coupon'|'maturity'|'premium'|'rent'|'mortgage'|'withdrawal'|'interest'; asset:AssetKey; amount:number; holdingId?:string; label:string };
+export type CashFlow = { kind:'external'|'trade'|'dividend'|'coupon'|'maturity'|'premium'|'rent'|'mortgage'|'withdrawal'|'interest'; asset:AssetKey; amount:number; holdingId?:string; label:string };
 export type TradeRecord = { year:number; age:number; asset:'stocks'|'bonds'; productId:string; label:string; side:'買入'|'賣出'; quantity:number; price:number; amount:number; realizedPnl?:number };
 
 export type SettlementInput = {

@@ -56,6 +56,7 @@ export const validateAndReconcileWorld = (candidate:unknown):{ok:true;value:Worl
   if(!validPrices(market.stockPrices)||!validPrices(market.bondPrices)||!validateMarketSignals(market.marketSignals))return{ok:false,diagnostics:['市場價格或市場訊號缺失、非有限或不合法。']};
   if(!market.stockPriceHistory||typeof market.stockPriceHistory!=='object'||Object.values(market.stockPriceHistory).some(path=>!Array.isArray(path)||!path.length||!path.every(price=>finite(price)&&price>0)))return{ok:false,diagnostics:['股票價格歷史不合法。']};
   if(!Array.isArray(market.annualReports)||!Array.isArray(market.marketSnapshots)||!Array.isArray(market.marketTrades)||!Array.isArray(value.game.history))return{ok:false,diagnostics:['年度報告、快照、交易或玩家歷史格式不合法。']};
+  if(market.assetOperations!==undefined&&(!Array.isArray(market.assetOperations)||market.assetOperations.some((operation:Record<string,unknown>)=>!operation||typeof operation.id!=='string'||!Number.isInteger(operation.year)||typeof operation.label!=='string'||typeof operation.detail!=='string')))return{ok:false,diagnostics:['資產操作紀錄格式不合法。']};
   if(!Array.isArray(value.propertyListings)||value.propertyListings.some(listing=>{
     if(!listing||typeof listing!=='object')return true;
     const item=listing as Record<string,unknown>;

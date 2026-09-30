@@ -51,12 +51,14 @@ const insuranceSurrenderValue=(annualPremium:number,premiumTerm:number,policyYea
   const nonGuaranteedWeight=clamp((policyYear-2)/18,0,0.88);
   return Math.max(0,base*((1-nonGuaranteedWeight)+nonGuaranteedWeight*insuranceFulfillment(signals)));
 };
+const cumulativePolicyPremiums=(holding:ProductHolding)=>holding.policyCashFlows?.filter(flow=>flow.type==='premium').reduce((sum,flow)=>sum+flow.amount,0)??(holding.annualPremium||0)*(holding.premiumsPaid||0);
 const STOCK_INITIAL_PRICES: Record<string, number> = { 'stock-world': 160, 'stock-tech': 740, 'stock-dividend': 165 };
 const BOND_INITIAL_PRICES: Record<string, number> = { 'bond-5': 98, 'bond-10': 91, 'bond-corp': 96 };
 const MARKET_MODEL_VERSION = 6;
 
 type AnnualReport = { year:number; age:number; signals:MarketSignals; events:Array<{label:string; text:string}>; summary:string; settlementId?:string };
 type MarketTrade = { year:number; age:number; asset:'stocks'|'bonds'; productId:string; label:string; side:'買入'|'賣出'; quantity:number; price:number; amount:number };
+type AssetOperation = { id:string; year:number; age:number; asset:'deposit'|'bonds'|'stocks'|'realEstate'|'insurance'; kind:'buy'|'sell'|'withdraw'|'plan'|'rental'; label:string; detail:string; cashFlow?:CashFlow };
 type MarketSnapshot = { year:number; age:number; signals:MarketSignals; stockPrices:Record<string,number>; stockPaths:Record<string,number[]>; bondPrices:Record<string,number>; settlementId?:string };
 type PropertyListing = { id:string; name:string; district:string; ping:number; price:number; marketRent:number; demand:number; populationTrend:number; birthRate:number; downPaymentRate:number; mortgageRate:number; mortgageYears:number };
 type PropertyHolding = PropertyListing & { boughtAge:number; purchasePrice:number; mortgageBalance:number; monthlyRent:number; rentalMode:'vacant'|'rent'; lastRentedMonths:number; lastRentalIncome:number; currentValue:number };
@@ -207,6 +209,9 @@ type HistoryEntry = {
   cashFlows?: CashFlow[];
   returnMethod?: string;
   settlementId?: string;
+  operations?: AssetOperation[];
+  holdingSnapshot?: ProductHolding[];
+  propertySnapshot?: PropertyHolding[];
 };
 
 type PendingChoice = {
@@ -269,7 +274,7 @@ const ASSET_META: Record<AssetKey, { label: string; short: string; liquidity: nu
   bonds: { label: '債券', short: 'Bonds', liquidity: 0.8 },
   stocks: { label: '股票', short: 'Stocks', liquidity: 0.7 },
   realEstate: { label: '房地產', short: 'Real Estate · 低流動性', liquidity: 0.35 },
-  insurance: { label: '長期保險', short: 'Insurance · 長期契約', liquidity: 0.2 },
+  insurance: { label: '保單退保價值', short: 'Insurance · 長期契約', liquidity: 0.2 },
 };
 
 const LIFE_EVENTS: LifeEvent[] = [
@@ -433,6 +438,7 @@ export default function Page() {
   const [marketYear, setMarketYear] = useState<number | null>(null);
   const [marketSnapshots, setMarketSnapshots] = useState<MarketSnapshot[]>([{year:0,age:24,signals:initialMarket.signals,stockPrices:initialMarket.stockPrices,stockPaths:initialMarket.stockPriceHistory,bondPrices:initialMarket.bondPrices}]);
   const [marketTrades, setMarketTrades] = useState<MarketTrade[]>([]);
+  const [assetOperations,setAssetOperations]=useState<AssetOperation[]>([]);
   const [researchOverlay, setResearchOverlay] = useState<{key:string; title:string; body:React.ReactNode} | null>(null);
   const [chartHover, setChartHover] = useState<{id:string; index:number} | null>(null);
   const [chartStartYear, setChartStartYear] = useState(0);
@@ -456,7 +462,7 @@ export default function Page() {
           setProductHoldings(world.holdings);
           setProductHistory(Array.isArray(world.history)?world.history:[]);
           setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);
-          setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setPropertyListings(world.propertyListings);setPropertyHoldings(world.properties);
+          setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setAssetOperations(Array.isArray(world.market.assetOperations)?world.market.assetOperations:[]);setPropertyListings(world.propertyListings);setPropertyHoldings(world.properties);
           setSaveStatus(decoded.diagnostics.length?{state:'blocked',lastYear:world.game.year,message:decoded.diagnostics.join(' ')}:{state:'saved',lastYear:world.game.year,message:''});
           loadComplete.current=true;setIsMounted(true);
           return;
@@ -487,6 +493,7 @@ export default function Page() {
         if (Array.isArray(parsed.history)) setProductHistory(parsed.history);
         if (Array.isArray(parsed.marketSnapshots) && parsed.marketSnapshots.length) setMarketSnapshots(parsed.marketSnapshots);
         if (Array.isArray(parsed.marketTrades)) setMarketTrades(parsed.marketTrades);
+        if (Array.isArray(parsed.assetOperations)) setAssetOperations(parsed.assetOperations);
         if (Array.isArray(parsed.propertyListings)) setPropertyListings(parsed.propertyListings);
         if (Array.isArray(parsed.propertyHoldings)) setPropertyHoldings(parsed.propertyHoldings);
         const hasSavedReports = Array.isArray(parsed.annualReports) && parsed.annualReports.length > 0;
@@ -519,7 +526,7 @@ export default function Page() {
     else setSaveStatus(current=>({state:'unsaved',lastYear:current.lastYear,message:'自動儲存失敗；目前進度只在記憶體中。請按「儲存」重試。'}));
     // buildSaveEnvelope intentionally reads the same committed render observed by this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game, productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, propertyListings, propertyHoldings, isMounted]);
+  }, [game, productHoldings, productHistory, stockPrices, stockPriceHistory, bondPrices, marketSignals, annualReports, marketSnapshots, marketTrades, assetOperations, propertyListings, propertyHoldings, isMounted]);
 
   const totalAssets = useMemo(() => sumPortfolio(game.portfolio), [game.portfolio]);
   const realWeight = useMemo(() => getRealWealth(totalAssets, game.cumulativeInflation), [totalAssets, game.cumulativeInflation]);
@@ -562,6 +569,7 @@ export default function Page() {
     const nextProperties=[...propertyHoldings,purchased];
     setPropertyHoldings(nextProperties);
     setPropertyListings((current) => current.filter((property) => property.id !== listing.id));
+    setAssetOperations(current=>[...current,{id:`property-buy-${listing.id}`,year:game.year,age:game.age,asset:'realEstate',kind:'buy',label:`買入房產｜${listing.name}`,detail:`總價 NT$${roundMoney(listing.price).toLocaleString('en-US')}；頭期款 NT$${roundMoney(downPayment).toLocaleString('en-US')}`,cashFlow:{kind:'trade',asset:'realEstate',amount:-downPayment,holdingId:listing.id,label:`買入房產頭期款｜${listing.name}`}}]);
     const portfolio=derivePortfolio(game.portfolio.cash-downPayment,productHoldings,nextProperties,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setGame((current) => ({
       ...current, portfolio,
@@ -577,6 +585,7 @@ export default function Page() {
       rentalMode: mode,
       monthlyRent: mode === 'rent' && requested > 0 ? requested : property.monthlyRent,
     }));
+    const property=propertyHoldings.find(item=>item.id===id);if(property)setAssetOperations(current=>[...current,{id:`rental-${id}-${Date.now()}`,year:game.year,age:game.age,asset:'realEstate',kind:'rental',label:`出租設定｜${property.name}`,detail:mode==='rent'?`設定月租 NT$${roundMoney(requested>0?requested:property.monthlyRent).toLocaleString('en-US')}`:'設定為暫不出租'}]);
   };
 
   const sellProperty = (id:string) => {
@@ -586,6 +595,7 @@ export default function Page() {
     if(equity<0&&game.portfolio.cash+equity<0)return alert('房屋為負淨值，現金不足以清償出售後的剩餘房貸。');
     const nextProperties=propertyHoldings.filter((item) => item.id !== id);
     setPropertyHoldings(nextProperties);
+    setAssetOperations(current=>[...current,{id:`property-sell-${id}-${Date.now()}`,year:game.year,age:game.age,asset:'realEstate',kind:'sell',label:`出售房產｜${property.name}`,detail:`清償房貸後淨收回 NT$${roundMoney(equity).toLocaleString('en-US')}`,cashFlow:{kind:'trade',asset:'realEstate',amount:equity,holdingId:id,label:`出售房產淨所得｜${property.name}`}}]);
     const portfolio=derivePortfolio(game.portfolio.cash+equity,productHoldings,nextProperties,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setGame((current) => ({
       ...current, portfolio,
@@ -616,6 +626,7 @@ export default function Page() {
       const nextPortfolio=derivePortfolio(game.portfolio.cash-amount,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
       const total=sumPortfolio(nextPortfolio),allocations=Object.fromEntries(ASSET_KEYS.map(key=>[key,total>0?nextPortfolio[key]/total*100:0])) as Allocation;
       setProductHoldings(nextHoldings);
+      setAssetOperations(current=>[...current,{id:`buy-${purchase.id}`,year:game.year,age:game.age,asset,kind:'buy',label:`買入｜${product.label.split('｜')[0]}`,detail:asset==='stocks'?`${requestedShares} 股，成交價 NT$${marketPrice.toFixed(2)}`:asset==='bonds'?`${requestedBondUnits} 張，報價 ${bondQuote.toFixed(2)}`:`投入 NT$${roundMoney(amount).toLocaleString('en-US')}`,cashFlow:{kind:'trade',asset,amount:-amount,holdingId:purchase.id,label:`買入支出｜${product.label.split('｜')[0]}`}}]);
       setGame(current=>({...current,portfolio:nextPortfolio,allocations,lifeStatus:`已購買商品，投入 NT$${roundMoney(amount).toLocaleString('en-US')}。持倉已成為資產總表來源。`}));
       setProductHistory((current) => [...current, purchase]);
       if (asset==='stocks' || asset==='bonds') setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset,productId,label:product.label.split('｜')[0],side:'買入',quantity:asset==='stocks'?requestedShares:requestedBondUnits,price:price||0,amount}]);
@@ -636,6 +647,7 @@ export default function Page() {
     const nextHoldings=productHoldings.map(h=>h.id===holdingId?updated:h);
     const portfolio=derivePortfolio(game.portfolio.cash+requested,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setProductHoldings(nextHoldings);
+    setAssetOperations(current=>[...current,{id:`withdraw-${holdingId}-${Date.now()}`,year:game.year,age:game.age,asset:'insurance',kind:'withdraw',label:`保單提取｜${holding.label.split('｜')[0]}`,detail:`提取 NT$${roundMoney(requested).toLocaleString('en-US')}；固定年繳保費不變`,cashFlow:{kind:'withdrawal',asset:'insurance',amount:requested,holdingId,label:`保單提取｜${holding.label.split('｜')[0]}`}}]);
     setGame((current)=>({...current,portfolio,eventHistory:[...current.eventHistory,`保單提取：從 ${holding.label.split('｜')[0]} 提取 NT${roundMoney(requested).toLocaleString('en-US')}，已回到現金；原約定保費不變。`],lifeStatus:'已從分紅保單提取現金，提取時點與金額已記錄。'}));
     setInsuranceWithdrawals((x)=>({...x,[holdingId]:''}));
   };
@@ -651,10 +663,12 @@ export default function Page() {
     const planText=mode==='fixed'
       ? '每年固定提取 NT$'+roundMoney(amount).toLocaleString('en-US')
       : '每年提取原始總預定保費的 '+percent+'%';
+    const holding=productHoldings.find(h=>h.id===holdingId);if(holding)setAssetOperations(current=>[...current,{id:`plan-${holdingId}-${Date.now()}`,year:game.year,age:game.age,asset:'insurance',kind:'plan',label:`保單提取計畫｜${holding.label.split('｜')[0]}`,detail:`第 ${startYear} 保單年度起，${planText}`}]);
     setGame(cur=>({...cur,eventHistory:[...cur.eventHistory,'保單提取計畫：設定第 '+startYear+' 保單年度起，'+planText+'。'],lifeStatus:'已設定分紅保單年度提取計畫。'}));
   };
   const cancelInsuranceWithdrawalPlan=(holdingId:string)=>{
     setProductHoldings(cur=>cur.map(h=>h.id!==holdingId?h:{...h,withdrawalMode:'none',withdrawalAmount:undefined,withdrawalPercent:undefined,withdrawalStartYear:undefined}));
+    const holding=productHoldings.find(h=>h.id===holdingId);if(holding)setAssetOperations(current=>[...current,{id:`plan-cancel-${holdingId}-${Date.now()}`,year:game.year,age:game.age,asset:'insurance',kind:'plan',label:`取消提取計畫｜${holding.label.split('｜')[0]}`,detail:'取消後不再執行排程提取'}]);
   };
 
   const sellStockPosition = (productId:string) => {
@@ -665,8 +679,9 @@ export default function Page() {
     if(sharesToSell>owned) return alert('賣出股數不能超過目前持股');
     const price=stockPrices[productId]||100;
     const sale=executeStockSale(productHoldings,productId,sharesToSell,price), proceeds=sale.proceeds, avgCost=sale.costBasis/sharesToSell;
-    setProductHoldings(sale.holdings);
     const label=lots[0]?.label.split('｜')[0]||productId;
+    setProductHoldings(sale.holdings);
+    setAssetOperations(current=>[...current,{id:`stock-sell-${productId}-${Date.now()}`,year:game.year,age:game.age,asset:'stocks',kind:'sell',label:`賣出｜${label}`,detail:`${sharesToSell} 股，實現損益 NT$${roundMoney(sale.realizedPnl).toLocaleString('en-US')}`,cashFlow:{kind:'trade',asset:'stocks',amount:proceeds,label:`股票賣出所得｜${label}`}}]);
     const portfolio=derivePortfolio(game.portfolio.cash+proceeds,sale.holdings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setGame((current)=>({...current,portfolio,lifeStatus:`已賣出 ${label} ${sharesToSell} 股，NT$${roundMoney(proceeds).toLocaleString('en-US')} 回到現金。`,eventHistory:[...current.eventHistory,`股票賣出：${label}，實現損益 NT$${roundMoney(sale.realizedPnl).toLocaleString('en-US')}。`]}));
     setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'stocks',productId,label,side:'賣出',quantity:sharesToSell,price,amount:proceeds}]);
@@ -688,6 +703,7 @@ export default function Page() {
     const nextHoldings=productHoldings.flatMap((item) => item.id !== holdingId ? [item] : units === owned ? [] : [{...item, bondUnits: owned-units, amount:item.amount-costSold}]);
     const portfolio=derivePortfolio(game.portfolio.cash+proceeds,nextHoldings,propertyHoldings,stockPrices,bondPrices,marketSignals,game.age) as Portfolio;
     setProductHoldings(nextHoldings);
+    setAssetOperations(current=>[...current,{id:`bond-sell-${holdingId}-${Date.now()}`,year:game.year,age:game.age,asset:'bonds',kind:'sell',label:`賣出債券｜${holding.label.split('｜')[0]}`,detail:`${units} 張，實現損益 NT$${roundMoney(proceeds-costSold).toLocaleString('en-US')}`,cashFlow:{kind:'trade',asset:'bonds',amount:proceeds,holdingId,label:`債券賣出所得｜${holding.label.split('｜')[0]}`}}]);
     setGame((current) => ({...current, portfolio, eventHistory:[...current.eventHistory,`債券出售：${holding.label.split('｜')[0]} ${units} 張，實現損益 NT${roundMoney(proceeds-costSold).toLocaleString('en-US')}。`]}));
     setMarketTrades((current)=>[...current,{year:game.year,age:game.age,asset:'bonds',productId:holding.productId,label:holding.label.split('｜')[0],side:'賣出',quantity:units,price:quote,amount:proceeds}]);
     setBondTradeUnits((current)=>({...current,['sell-'+holdingId]:''}));
@@ -708,7 +724,7 @@ export default function Page() {
   const allocationDifference = totalAssets - allocationAmountTotal;
   const allocationValid = Math.abs(allocationDifference) < 1;
 
-  const buildSaveEnvelope=()=>({version:SAVE_VERSION,savedAt:new Date().toISOString(),lastSettlementId:game.history.at(-1)?.settlementId,settlementHistoryComplete:game.history.length===0||Boolean(game.history.at(-1)?.settlementId),game,holdings:productHoldings,history:productHistory,properties:propertyHoldings,propertyListings,market:{stockPrices,stockPriceHistory,bondPrices,marketSignals,annualReports,marketSnapshots,marketTrades,marketModelVersion:MARKET_MODEL_VERSION}});
+  const buildSaveEnvelope=()=>({version:SAVE_VERSION,savedAt:new Date().toISOString(),lastSettlementId:game.history.at(-1)?.settlementId,settlementHistoryComplete:game.history.length===0||Boolean(game.history.at(-1)?.settlementId),game,holdings:productHoldings,history:productHistory,properties:propertyHoldings,propertyListings,market:{stockPrices,stockPriceHistory,bondPrices,marketSignals,annualReports,marketSnapshots,marketTrades,assetOperations,marketModelVersion:MARKET_MODEL_VERSION}});
 
   const handleRestart = () => {
     if(saveStatus.state!=='saved'&&!window.confirm('目前有尚未成功儲存的進度。重新開始會放棄記憶體中的變更，確定繼續嗎？'))return;
@@ -726,6 +742,7 @@ export default function Page() {
     setMarketYear(null);
     setMarketSnapshots([{year:0,age:24,signals:restartedMarket.signals,stockPrices:restartedMarket.stockPrices,stockPaths:restartedMarket.stockPriceHistory,bondPrices:restartedMarket.bondPrices}]);
     setMarketTrades([]);
+    setAssetOperations([]);
     setPropertyHoldings([]);
     setPropertyListings(buildPropertyMarket(restartedMarket.signals,0));
     setStockTradeShares({});
@@ -760,13 +777,13 @@ export default function Page() {
         return{...holding,annualPremium:premium,cashFlowHistoryComplete:Array.isArray(holding.policyCashFlows)};
       });
       const decoded=decodeWorld(JSON.stringify(candidate));if(!decoded.ok)return alert(`仍無法載入：${decoded.diagnostics.join(' ')}`);
-      const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);
+      const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setAssetOperations(Array.isArray(world.market.assetOperations)?world.market.assetOperations:[]);
       setSaveStatus({state:'unsaved',lastYear:null,message:'契約固定保費已補回記憶體；原始存檔仍未改動。請按「儲存」確認建立新版存檔。缺失的歷史現金流仍標示為不完整。'});
     }catch{alert('未完成契約資料補回；原始存檔保持不變。')}
   };
 
   const handleContinue = () => {
-    const decoded=decodeWorld(window.localStorage.getItem(WORLD_KEY));if(!decoded.ok)return alert(decoded.reason==='missing'?'目前沒有完整世界存檔；舊存檔會在重新載入頁面時遷移。':`存檔無法安全載入；原始資料已保留。${decoded.diagnostics.join(' ')}`);const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setSaveStatus(decoded.diagnostics.length?{state:'blocked',lastYear:world.game.year,message:decoded.diagnostics.join(' ')}:{state:'saved',lastYear:world.game.year,message:''});alert(decoded.diagnostics.length?'完整世界已載入，但總表不一致；請檢查診斷後手動儲存。':'完整世界載入成功');
+    const decoded=decodeWorld(window.localStorage.getItem(WORLD_KEY));if(!decoded.ok)return alert(decoded.reason==='missing'?'目前沒有完整世界存檔；舊存檔會在重新載入頁面時遷移。':`存檔無法安全載入；原始資料已保留。${decoded.diagnostics.join(' ')}`);const world=decoded.value;setGame({...buildInitialState(),...world.game,pendingChoice:null});setProductHoldings(world.holdings);setProductHistory(world.history||[]);setPropertyHoldings(world.properties);setPropertyListings(world.propertyListings||[]);setStockPrices(world.market.stockPrices);setStockPriceHistory(world.market.stockPriceHistory);setBondPrices(world.market.bondPrices);setMarketSignals(world.market.marketSignals);setAnnualReports(world.market.annualReports);setMarketSnapshots(world.market.marketSnapshots);setMarketTrades(world.market.marketTrades);setAssetOperations(Array.isArray(world.market.assetOperations)?world.market.assetOperations:[]);setSaveStatus(decoded.diagnostics.length?{state:'blocked',lastYear:world.game.year,message:decoded.diagnostics.join(' ')}:{state:'saved',lastYear:world.game.year,message:''});alert(decoded.diagnostics.length?'完整世界已載入，但總表不一致；請檢查診斷後手動儲存。':'完整世界載入成功');
   };
 
   const advanceYear = () => {
@@ -789,7 +806,12 @@ export default function Page() {
     const flowLabels=result.cashFlows.map(flow=>`${flow.label}：${flow.amount>=0?'+':'-'}NT$${roundMoney(Math.abs(flow.amount)).toLocaleString('en-US')}`);
     const annualChanges=ASSET_KEYS.map(asset=>`${ASSET_META[asset].label}｜期初 NT$${roundMoney(openingPortfolio[asset]).toLocaleString('en-US')}｜期末 NT$${roundMoney(closingPortfolio[asset]).toLocaleString('en-US')}`);
     const nextAge=game.age+1;
-    const nextHistory:HistoryEntry={year:game.year,age:game.age,total:finalTotal,real:getRealWealth(finalTotal,(1+game.cumulativeInflation)*(1+signals.inflation)-1),liquidity:getLiquidity(closingPortfolio),eventTitle:`第 ${game.year} 年財務結算`,portfolio:{...closingPortfolio},openingPortfolio:{...openingPortfolio},returnRate:simpleReturn,returnMethod:'簡化期末報酬：外部新增資金視為年末流入；非 TWR/MWR',actions:[...marketTrades.filter(t=>t.year===game.year).map(t=>`${t.side} ${t.label} ${t.quantity}${t.asset==='stocks'?'股':'張'}｜NT$${roundMoney(t.amount).toLocaleString('en-US')}`),...flowLabels],cashFlows:result.cashFlows.map(x=>({...x})),changes:annualChanges,settlementId:result.ticketKey};
+    const yearOperations=assetOperations.filter(operation=>operation.year===game.year);
+    const settlementOperations:AssetOperation[]=result.cashFlows.filter(flow=>flow.kind==='maturity'||flow.kind==='withdrawal').map((flow,index)=>({id:`settlement-${result.ticketKey}-${flow.kind}-${flow.holdingId||index}`,year:game.year,age:game.age,asset:flow.asset as AssetOperation['asset'],kind:flow.kind==='withdrawal'?'withdraw':'sell',label:flow.kind==='withdrawal'?'執行排程提取':'契約到期',detail:flow.label}));
+    const allOperations=[...yearOperations,...settlementOperations];
+    const operationCashFlows=yearOperations.flatMap(operation=>operation.cashFlow?[{...operation.cashFlow,label:`${operation.cashFlow.label}（操作 ${operation.id}）`}]:[]);
+    const settlementCashFlows=result.cashFlows.map(flow=>{const operation=settlementOperations.find(item=>item.detail===flow.label);return{...flow,label:operation?`${flow.label}（操作 ${operation.id}）`:flow.label}});
+    const nextHistory:HistoryEntry={year:game.year,age:game.age,total:finalTotal,real:getRealWealth(finalTotal,(1+game.cumulativeInflation)*(1+signals.inflation)-1),liquidity:getLiquidity(closingPortfolio),eventTitle:`第 ${game.year} 年財務結算`,portfolio:{...closingPortfolio},openingPortfolio:{...openingPortfolio},returnRate:simpleReturn,returnMethod:'簡化期末報酬：外部新增資金視為年末流入；非 TWR/MWR',actions:allOperations.map(operation=>`${operation.label}｜${operation.detail}`),operations:allOperations.map(operation=>({...operation,cashFlow:operation.cashFlow?{...operation.cashFlow}:undefined})),cashFlows:[...operationCashFlows,...settlementCashFlows],changes:annualChanges,settlementId:result.ticketKey,holdingSnapshot:result.holdings.map(holding=>({...holding,policyCashFlows:holding.policyCashFlows?.map(flow=>({...flow}))})),propertySnapshot:result.properties.map(property=>({...property}))};
     const histories=[...game.history,nextHistory];
     let peak=histories[0]?.total||finalTotal,maxDrawdown=0;
     histories.forEach(entry=>{peak=Math.max(peak,entry.total);if(peak>0)maxDrawdown=Math.max(maxDrawdown,1-entry.total/peak)});
@@ -864,7 +886,7 @@ export default function Page() {
           <button style={{marginLeft:12}} onClick={saveStatus.state==='blocked'&&saveStatus.lastYear===null?handleRecoverLegacyPolicies:handleSave}>{saveStatus.state==='blocked'&&saveStatus.lastYear===null?'修復舊保單':'重試儲存'}</button>
         </div>}
 
-        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>資產總表</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button></nav>
+        <nav className="workbook-tabs"><button className={mainView==='game'?'active':''} onClick={()=>setMainView('game')}>資產總表</button><button className={mainView==='market'?'active':''} onClick={()=>setMainView('market')}>投資市場</button><button onClick={()=>{setMainView('market');requestAnimationFrame(()=>document.getElementById('market-trade-history')?.scrollIntoView({behavior:'smooth'}))}}>股票／債券交易紀錄 ↓</button></nav>
         {mainView === 'game' ? <>
         <section className="stats-row">
           <div className="stat-card">
@@ -903,10 +925,11 @@ export default function Page() {
               {holdingView === 'current' ? <>
                 <div className="panel-header"><h2>當下持有</h2><span>{productHoldings.length} 筆持倉</span></div>
                 {productHoldings.length === 0 ? <p className="empty-holdings">目前沒有持有中的金融商品。</p> :
-                  <div className="holdings-strip">{productHoldings.map((holding) => <div className="holding-chip" key={holding.id}>
-                    <strong>{holding.label.split('｜')[0]}</strong><span>NT${roundMoney(holding.amount).toLocaleString('en-US')}</span>
-                    <small>{holding.boughtAge} 歲購入 · {totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產</small>
-                  </div>)}</div>}
+                  <div className="holdings-strip">{productHoldings.map((holding) => {const displayedValue=holding.asset==='insurance'?insuranceValue(holding,game.age,marketSignals):holding.amount;return <div className="holding-chip" key={holding.id}>
+                    <strong>{holding.label.split('｜')[0]}</strong><span>{holding.asset==='insurance'?'退保價值 ':''}NT${roundMoney(displayedValue).toLocaleString('en-US')}</span>
+                    <small>{holding.asset==='insurance'?`持有 1 張 · 供款 ${holding.premiumsPaid||1}/${holding.premiumTerm} 期 · 累計已繳 NT$${roundMoney(cumulativePolicyPremiums(holding)).toLocaleString('en-US')}`:`${holding.boughtAge} 歲購入 · ${totalAssets > 0 ? ((holding.amount / totalAssets) * 100).toFixed(1) : '0.0'}% 總資產`}</small>
+                    {holding.asset==='insurance'&&displayedValue===0&&<small>已持有保單；目前模型退保價值為 0，累計已繳保費不另加回總資產。</small>}
+                  </div>})}</div>}
               </> : <>
                 <div className="panel-header"><h2>歷史紀錄</h2><span>累計 {productHistory.length} 筆</span></div>
                 {productHistory.length === 0 ? <p className="empty-holdings">目前還沒有任何購買紀錄。</p> :
@@ -949,9 +972,9 @@ export default function Page() {
                     {productHoldings.filter((holding) => holding.asset === asset).length > 0 && <div className="drawer-holdings">
                       <div className="shop-label">目前持有倉位</div>
                       {productHoldings.filter((holding) => holding.asset === asset).map((holding) => <div className="holding-card" key={holding.id}>
-                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceValue(holding,game.age,marketSignals),paid=holding.premiumsPaid||1,premium=holding.annualPremium??holding.amount,irr=policyIrr(premium,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
+                        {holding.asset==='insurance'&&holding.premiumTerm ? (()=>{const py=Math.max(1,game.age-holding.boughtAge+1),sv=insuranceValue(holding,game.age,marketSignals),paid=holding.premiumsPaid||1,premium=holding.annualPremium||0,irr=policyIrr(premium,paid,py,sv,holding.cumulativeWithdrawals||0),fr=insuranceFulfillment(marketSignals);return <div className="insurance-policy-ui">
                           <div className="insurance-policy-head"><div><strong>{holding.label.split('｜')[0]}</strong><small>保單年度 第 {py} 年 · 供款 {paid}/{holding.premiumTerm} 年</small></div><b>退保價值 NT${roundMoney(sv).toLocaleString('en-US')}</b></div>
-                          <div className="insurance-metrics"><div><span>累計已繳</span><strong>NT${roundMoney(premium*paid).toLocaleString('en-US')}</strong></div><div><span>目前 IRR（近似）</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>
+                          <div className="insurance-metrics"><div><span>持有張數</span><strong>1 張</strong></div><div><span>累計已繳（不另加回總資產）</span><strong>NT${roundMoney(cumulativePolicyPremiums(holding)).toLocaleString('en-US')}</strong></div><div><span>目前 IRR（近似）</span><strong>{irr==null?'—':(irr*100).toFixed(2)+'%'}</strong></div><div><span>模擬達成率</span><strong>{(fr*100).toFixed(1)}%</strong></div><div><span>供款狀態</span><strong>{paid>=holding.premiumTerm?'已完成':'尚餘 '+(holding.premiumTerm-paid)+' 年'}</strong></div></div>{sv===0&&<p>已持有保單；目前模型退保價值為 0。累計已繳保費僅供契約進度參考，不計入總資產。</p>}
                           <div className="insurance-withdraw"><label className="money-input-wrap"><span>NT$</span><input inputMode="numeric" pattern="[0-9]*" placeholder="單次提取金額" value={insuranceWithdrawals[holding.id]||''} onChange={(e)=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label><button onClick={()=>withdrawInsurance(holding.id)}>單次提取</button></div>
                           <div className="insurance-plan"><strong>年度提取計畫</strong><label><span>提取方式</span><select value={insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed'} onChange={e=>setInsuranceWithdrawalModes(x=>({...x,[holding.id]:e.target.value as 'fixed'|'percent'}))}><option value="fixed">每年固定金額</option><option value="percent">每年按總預定保費比例</option></select></label><label><span>開始保單年度</span><input inputMode="numeric" value={insuranceWithdrawalStartYears[holding.id]||holding.withdrawalStartYear||6} onChange={e=>setInsuranceWithdrawalStartYears(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>{(insuranceWithdrawalModes[holding.id]||holding.withdrawalMode||'fixed')==='fixed'?<label><span>每年提取 NT$</span><input inputMode="numeric" value={insuranceWithdrawals[holding.id]||holding.withdrawalAmount||''} onChange={e=>setInsuranceWithdrawals(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label>:<label><span>總預定保費比例 %</span><input inputMode="decimal" value={insuranceWithdrawalPercents[holding.id]||holding.withdrawalPercent||''} onChange={e=>setInsuranceWithdrawalPercents(x=>({...x,[holding.id]:e.target.value.replace(/[^0-9.]/g,'')}))}/></label>}<div><button onClick={()=>setInsuranceWithdrawalPlan(holding.id)}>設定年度提取</button>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<button onClick={()=>cancelInsuranceWithdrawalPlan(holding.id)}>取消計畫</button>}</div>{holding.withdrawalMode&&holding.withdrawalMode!=='none'&&<small>已啟用：第 {holding.withdrawalStartYear} 年起 · 累計已提取 NT${roundMoney(holding.cumulativeWithdrawals||0).toLocaleString('en-US')}</small>}</div>
                           <small>達成率依市場訊號平滑模擬於 90%～105%，只作用於非保證利益；此區間為 TIME 模型設定。</small>
@@ -1041,9 +1064,11 @@ export default function Page() {
                   <button className="history-popup-trigger" onClick={()=>setResearchOverlay({key:'history-'+item.year,title:'第 '+item.year+' 年｜'+item.age+'歲',body:<div className="history-popup-body">
                     <div className="history-popup-total"><span>年度總資產</span><strong>NT${roundMoney(item.total).toLocaleString('en-US')}</strong></div>
                     <div className="history-return"><span>年度投資報酬率</span><strong>{item.returnRate == null ? '舊紀錄未保存' : (item.returnRate >= 0 ? '+' : '')+(item.returnRate*100).toFixed(1)+'%'}</strong></div>
-                    <div className="history-assets">{p ? Object.entries({現金:p.cash,定存:p.deposit,債券:p.bonds,股票:p.stocks,房地產:p.realEstate,長期保險:p.insurance}).map(([label,value])=><div key={label}><span>{label}</span><strong>NT${roundMoney(value).toLocaleString('en-US')}</strong></div>) : <p>這筆舊紀錄沒有保存各資產餘額；新年度開始後會自動記錄。</p>}</div>
+                    <div className="history-assets">{p ? Object.entries({現金:p.cash,定存:p.deposit,債券:p.bonds,股票:p.stocks,房地產:p.realEstate,'保單退保價值':p.insurance}).map(([label,value])=><div key={label}><span>{label}</span><strong>NT${roundMoney(value).toLocaleString('en-US')}</strong></div>) : <p>這筆舊紀錄沒有保存各資產餘額；不以目前持倉替代舊年度資料。</p>}</div>
+                    <div className="history-actions"><b>保單持有與供款</b>{item.holdingSnapshot ? (()=>{const policies=item.holdingSnapshot.filter(holding=>holding.asset==='insurance');const reportSignals=annualReports.find(report=>report.year===item.year)?.signals;return policies.length?policies.map(policy=>{const value=reportSignals?insuranceValue(policy,item.age+1,reportSignals):null;return <p key={policy.id}>持有 1 張｜{policy.label.split('｜')[0]}｜供款 {policy.premiumsPaid||1}/{policy.premiumTerm} 期｜累計已繳 NT${roundMoney(cumulativePolicyPremiums(policy)).toLocaleString('en-US')}（不另加回總資產）｜退保價值 {value==null?'舊資料缺少估值訊號':`NT$${roundMoney(value).toLocaleString('en-US')}${value===0?'（已持有保單；目前模型退保價值為 0）':''}`}</p>}):<p>該年度沒有保單持倉。</p>})():<p>這筆舊紀錄沒有保存持倉快照；不使用目前持倉猜造歷史。</p>}</div>
                     <div className="history-actions"><b>本年度資產變化</b>{item.changes?.length ? item.changes.map((x,i)=><p key={i}>{x}</p>) : <p>這筆舊紀錄沒有保存資產變化。</p>}</div>
-                    <div className="history-actions"><b>當年度操作</b>{item.actions?.length ? item.actions.map((x,i)=><p key={i}>{x}</p>) : <p>這個年度沒有可顯示的操作紀錄。</p>}</div>
+                    <div className="history-actions"><b>資產操作</b>{item.operations?.length ? item.operations.map(operation=><p key={operation.id}>{operation.label}｜{operation.detail}{operation.cashFlow?'｜對應下方現金流':''}</p>) : <p>{item.actions?.length?'這筆舊紀錄只有未分類的操作摘要，無法可靠區分操作與現金流；不猜造分類。':'這個年度沒有可顯示的資產操作。'}</p>}</div>
+                    <div className="history-actions"><b>現金流</b>{item.cashFlows?.length ? item.cashFlows.map((flow,i)=><p key={i}>{flow.label}｜{flow.amount>=0?'+':'-'}NT$${roundMoney(Math.abs(flow.amount)).toLocaleString('en-US')}</p>) : <p>這筆舊紀錄沒有保存可核對的現金流；不從目前狀態反推。</p>}</div>
                   </div>})}><span>第 {item.year} 年資產紀錄</span><b>查看詳情 →</b></button>
                 </>;
               })()}
@@ -1087,7 +1112,6 @@ export default function Page() {
               </div>
             </div>
           })}
-          <div className="market-year-trades"><div className="panel-header compact"><h2>當年度買賣紀錄</h2><span>{selectedTrades.length} 筆</span></div>{selectedTrades.length===0?<p>這個年度沒有股票或債券交易。</p>:<div className="market-trade-scroll">{selectedTrades.map((t,i)=><div className="market-trade-row" key={i}><strong>{t.side}｜{t.label}</strong><span>{t.quantity} {t.asset==='stocks'?'股':'張'} · {t.price.toFixed(2)}</span><em>NT{roundMoney(t.amount).toLocaleString('en-US')}</em></div>)}</div>}</div>
           <div className="panel-header"><h2>債券市場與持倉</h2><span>{bondHoldings.length} 筆</span></div>
           {productCatalog.bonds.map((product)=>{const research=bondResearch(product.id,selectedSignals);return <div className="market-card" key={'market-'+product.id}><div className="market-quote"><div><strong>{product.label.split('｜')[0]}</strong><small>每 100 面額市場報價</small></div><b>{(selectedMarket?.bondPrices[product.id]||100).toFixed(2)}</b></div><div className="research-tabs">
               {[
@@ -1105,9 +1129,10 @@ export default function Page() {
               }} className={researchOverlay?.key===product.id+'-'+key?'active':''}><span>{label}</span><b>{status}</b></button>)}
             </div></div>})}
           {bondHoldings.map(h=>{const quote=bondPrices[h.productId]||100;const value=(h.bondUnits||0)*(h.faceValue||10000)*quote/100;return <div className="stock-statement" key={'bond-'+h.id}><div><strong>{h.label.split('｜')[0]}</strong><small>{h.boughtAge}歲買入</small></div><div><span>持有張數</span><b>{h.bondUnits||0}</b></div><div><span>面額</span><b>NT${roundMoney((h.bondUnits||0)*(h.faceValue||10000)).toLocaleString('en-US')}</b></div><div><span>買入價</span><b>{(h.buyPrice||100).toFixed(2)}</b></div><div><span>目前報價</span><b>{quote.toFixed(2)}</b></div><div><span>目前市值</span><b>NT${roundMoney(value).toLocaleString('en-US')}</b></div><div><span>Coupon</span><b>{((h.couponRate||0)*100).toFixed(1)}%</b></div><div><span>剩餘年期</span><b>{Math.max(0,(h.boughtAge+(h.maturityYears||0))-game.age)} 年</b></div><div className="stock-sell-order"><label className="money-input-wrap"><span>賣出張數</span><input inputMode="numeric" pattern="[0-9]*" value={bondTradeUnits['sell-'+h.id]||''} onChange={(e)=>setBondTradeUnits(c=>({...c,['sell-'+h.id]:e.target.value.replace(/[^0-9]/g,'')}))}/></label></div><button className="danger" onClick={()=>sellBond(h.id)}>賣出債券</button></div>})}
+          <details id="market-trade-history" className="market-year-trades"><summary><strong>股票／債券交易紀錄</strong><span>{selectedMarketYear===0?'遊戲開始前':`第 ${selectedMarketYear} 年`} · {selectedTrades.length} 筆</span></summary>{selectedTrades.length===0?<p>這個年度沒有股票或債券交易。</p>:<div className="market-trade-scroll">{selectedTrades.map((t,i)=><div className="market-trade-row" key={i}><strong>{t.side}｜{t.label}</strong><span>{t.quantity} {t.asset==='stocks'?'股':'張'} · {t.price.toFixed(2)}</span><em>NT${roundMoney(t.amount).toLocaleString('en-US')}</em></div>)}</div>}</details>
           <div className="panel-header"><h2>房地產市場與我的房產</h2><span>{propertyHoldings.length} 間持有</span></div>
           {propertyListings.map(p=><div className="market-card" key={"market-"+p.id}><div className="market-quote"><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)} 坪</small></div><b>NT${(p.price/10000).toFixed(0)}萬</b></div><p>每坪 NT${roundMoney(p.price/p.ping).toLocaleString("en-US")} · 頭期 NT${roundMoney(p.price*p.downPaymentRate).toLocaleString("en-US")} · 房貸 {(p.mortgageRate*100).toFixed(2)}%</p><p>人口 {p.populationTrend>=0?"↑":"↓"} · 出生率 {(p.birthRate*100).toFixed(2)}% · 買氣 {p.demand>.8?"強":p.demand>.68?"中等":"偏弱"} · 市場租金約 NT${p.marketRent.toLocaleString("en-US")}/月</p></div>)}
-          {propertyHoldings.map(p=>{const equity=Math.max(0,p.currentValue-p.mortgageBalance);return <div className="stock-statement" key={"owned-"+p.id}><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)}坪 · {p.boughtAge}歲購入</small></div><div><span>目前估值</span><b>NT${roundMoney(p.currentValue).toLocaleString("en-US")}</b></div><div><span>剩餘房貸</span><b>NT${roundMoney(p.mortgageBalance).toLocaleString("en-US")}</b></div><div><span>房屋淨值</span><b>NT${roundMoney(equity).toLocaleString("en-US")}</b></div><div><span>上年度出租結果</span><b>{p.rentalMode==="rent"?p.lastRentedMonths+"/12 個月":"未出租"}</b><small>{p.lastRentalIncome>0?"租金 NT$"+roundMoney(p.lastRentalIncome).toLocaleString("en-US")+" 已回到現金":""}</small></div><div className="stock-sell-order"><label className="money-input-wrap"><span>月租</span><input inputMode="numeric" value={rentInputs[p.id]??String(roundMoney(p.monthlyRent))} onChange={e=>setRentInputs(x=>({...x,[p.id]:e.target.value.replace(/[^0-9]/g,"")}))}/></label><small>市場行情約 NT${p.marketRent.toLocaleString("en-US")}/月</small></div><button onClick={()=>setPropertyRental(p.id,"rent")}>設定出租</button><button onClick={()=>setPropertyRental(p.id,"vacant")}>暫不出租</button><button className="danger" onClick={()=>sellProperty(p.id)}>出售房產</button></div>})}
+          {propertyHoldings.map(p=>{const equity=p.currentValue-p.mortgageBalance;return <div className="stock-statement" key={"owned-"+p.id}><div><strong>{p.name}</strong><small>{p.district} · {p.ping.toFixed(1)}坪 · {p.boughtAge}歲購入</small></div><div><span>目前估值</span><b>NT${roundMoney(p.currentValue).toLocaleString("en-US")}</b></div><div><span>剩餘房貸</span><b>NT${roundMoney(p.mortgageBalance).toLocaleString("en-US")}</b></div><div><span>房屋淨值</span><b>NT${roundMoney(equity).toLocaleString("en-US")}</b></div><div><span>上年度出租結果</span><b>{p.rentalMode==="rent"?p.lastRentedMonths+"/12 個月":"未出租"}</b><small>{p.lastRentalIncome>0?"租金 NT$"+roundMoney(p.lastRentalIncome).toLocaleString("en-US")+" 已回到現金":""}</small></div><div className="stock-sell-order"><label className="money-input-wrap"><span>月租</span><input inputMode="numeric" value={rentInputs[p.id]??String(roundMoney(p.monthlyRent))} onChange={e=>setRentInputs(x=>({...x,[p.id]:e.target.value.replace(/[^0-9]/g,"")}))}/></label><small>市場行情約 NT${p.marketRent.toLocaleString("en-US")}/月</small></div><button onClick={()=>setPropertyRental(p.id,"rent")}>設定出租</button><button onClick={()=>setPropertyRental(p.id,"vacant")}>暫不出租</button><button className="danger" onClick={()=>sellProperty(p.id)}>出售房產</button></div>})}
           <div className="panel-header"><h2>我的持股明細</h2><span>{stockPositions.length} 檔</span></div>
           {stockPositions.length===0?<p>目前沒有持股。</p>:stockPositions.map(pos=>{const price=stockPrices[pos.product.id]||100;const value=pos.shares*price;const pnl=value-pos.cost;return <div className="stock-statement" key={'position-'+pos.product.id}>
             <div><strong>{pos.product.label.split('｜')[0]}</strong><small>{pos.lots.length} 筆買入紀錄 · 平均成本</small></div>
